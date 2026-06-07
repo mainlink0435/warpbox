@@ -193,27 +193,40 @@ func parseRange(rang string, fileSize int64) (*httpRange, error) {
 	startStr := strings.TrimSpace(parts[0])
 	endStr := strings.TrimSpace(parts[1])
 
+	var start, end int64
+
 	if startStr == "" {
-		return nil, fmt.Errorf("missing start in range")
-	}
-
-	start, err := strconv.ParseInt(startStr, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid start in range: %w", err)
-	}
-
-	var end int64
-	if endStr == "" {
-		end = fileSize - 1 // suffix range, fetch to end
-	} else {
-		end, err = strconv.ParseInt(endStr, 10, 64)
+		// Suffix range: "bytes=-N" means last N bytes.
+		suffixSize, err := strconv.ParseInt(endStr, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid end in range: %w", err)
+			return nil, fmt.Errorf("invalid suffix range: %w", err)
 		}
-	}
+		if suffixSize >= fileSize {
+			start = 0
+			end = fileSize - 1
+		} else {
+			start = fileSize - suffixSize
+			end = fileSize - 1
+		}
+	} else {
+		var parseErr error
+		start, parseErr = strconv.ParseInt(startStr, 10, 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid start in range: %w", parseErr)
+		}
 
-	if start > end || start < 0 || end >= fileSize {
-		return nil, fmt.Errorf("range out of bounds: start=%d end=%d fileSize=%d", start, end, fileSize)
+		if endStr == "" {
+			end = fileSize - 1
+		} else {
+			end, parseErr = strconv.ParseInt(endStr, 10, 64)
+			if parseErr != nil {
+				return nil, fmt.Errorf("invalid end in range: %w", parseErr)
+			}
+		}
+
+		if start > end || start < 0 || end >= fileSize {
+			return nil, fmt.Errorf("range out of bounds: start=%d end=%d fileSize=%d", start, end, fileSize)
+		}
 	}
 
 	return &httpRange{
