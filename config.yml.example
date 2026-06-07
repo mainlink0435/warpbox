@@ -1,0 +1,34 @@
+# Warpbox Configuration
+# Copy this file to config.yml and fill in your values.
+
+torbox:
+  # Your TorBox API key (required).
+  api_key: ""
+  # Base URL for the TorBox API (optional).
+  base_url: "https://api.torbox.app/v1"
+
+server:
+  # Address the WebDAV server listens on (optional).
+  listen_addr: ":8080"
+  # Root path for the WebDAV service (optional).
+  webdav_root: "/webdav"
+
+cache:
+  # Size of each pre-fetched chunk in MB (optional, default 16).
+  chunk_size_mb: 16
+  # Maximum RAM to use for cached chunks in MB (optional, default 512).
+  max_ram_mb: 512
+  # Time-to-live for cached chunks in seconds (optional, default 30).
+  ttl_seconds: 30
+
+throttle:
+  # Maximum API requests per minute to TorBox (optional, default 250).
+  requests_per_minute: 250
+
+logging:
+  # Log format: "text" for human-readable, "json" for structured JSON (optional, default "text").
+  format: "text"
+
+sync:
+  # How often to refresh metadata from TorBox in minutes (optional, default 5).
+  interval_minutes: 5

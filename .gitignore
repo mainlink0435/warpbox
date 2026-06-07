@@ -1,0 +1,28 @@
+# Binaries
+warpbox.exe
+warpbox
+*.exe
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Config
+config.yml
+
+# SQLite databases
+*.db
+*.db-*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
