@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -122,6 +123,8 @@ func (c *Client) ListFiles(ctx context.Context, params ListFilesParams) ([]Torre
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
+	slog.Debug("torbox.ListFiles", "offset", params.Offset, "limit", params.Limit)
+
 	body, err := c.do(req)
 	if err != nil {
 		return nil, err
@@ -135,6 +138,9 @@ func (c *Client) ListFiles(ctx context.Context, params ListFilesParams) ([]Torre
 	if env.Error != nil && *env.Error != "" {
 		return nil, fmt.Errorf("torbox API error: %s", *env.Error)
 	}
+
+	n := len(env.Data)
+	slog.Debug("torbox.ListFiles result", "torrents", n)
 	return env.Data, nil
 }
 
@@ -158,6 +164,8 @@ func (c *Client) GetDownloadURL(ctx context.Context, torrentID, fileID int64, re
 		return "", fmt.Errorf("torbox: creating request: %w", err)
 	}
 
+	slog.Debug("torbox.GetDownloadURL", "torrent_id", torrentID, "file_id", fileID)
+
 	body, err := c.do(req)
 	if err != nil {
 		return "", err
@@ -171,6 +179,8 @@ func (c *Client) GetDownloadURL(ctx context.Context, torrentID, fileID int64, re
 	if env.Error != nil && *env.Error != "" {
 		return "", fmt.Errorf("torbox API error: %s", *env.Error)
 	}
+
+	slog.Debug("torbox.GetDownloadURL result", "has_url", env.Data != "")
 	return env.Data, nil
 }
 

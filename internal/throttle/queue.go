@@ -6,7 +6,7 @@ package throttle
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -69,8 +69,7 @@ func (q *Queue) processLoop(ctx context.Context) {
 		}
 
 		if err := r.Execute(ctx); err != nil {
-			// TODO: Log error via callback or slog.
-			_ = fmt.Errorf("throttle: request %q failed: %w", r.Label, err)
+			slog.Error("throttle request failed", "label", r.Label, "error", err)
 		}
 
 		q.mu.Lock()

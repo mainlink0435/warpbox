@@ -7,7 +7,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -82,7 +81,7 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 // handleGet serves file content (with optional byte-range).
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement byte-range aware file serving via throttle → cache → CDN.
-	_ = fmt.Sprintf("GET %s", r.URL.Path)
+	slog.Debug("GET request", "path", r.URL.Path)
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
