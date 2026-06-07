@@ -69,10 +69,15 @@ func main() {
 	defer metadataStore.Close()
 
 	// --- RAM cache ---
+	evictionStrategy := cache.StrategyTTL
+	if cfg.Cache.EvictionStrategy == "lru" {
+		evictionStrategy = cache.StrategyLRU
+	}
 	ramCache := cache.NewBuffer(
 		cfg.Cache.MaxRAMMB*1024*1024,    // bytes
 		cfg.Cache.ChunkSizeMB*1024*1024, // bytes per chunk
 		time.Duration(cfg.Cache.TTLSeconds)*time.Second,
+		evictionStrategy,
 	)
 	defer ramCache.Stop()
 
