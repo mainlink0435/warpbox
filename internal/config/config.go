@@ -22,9 +22,11 @@ type ServerConfig struct {
 
 // CacheConfig holds JIT RAM buffering parameters.
 type CacheConfig struct {
-	ChunkSizeMB  int `yaml:"chunk_size_mb"`  // Default: 16
-	MaxRAMMB     int `yaml:"max_ram_mb"`     // Default: 512
-	TTLSeconds   int `yaml:"ttl_seconds"`    // Default: 30
+	ChunkSizeMB      int    `yaml:"chunk_size_mb"`      // Default: 16
+	MaxRAMMB         int    `yaml:"max_ram_mb"`         // Default: 512
+	TTLSeconds       int    `yaml:"ttl_seconds"`        // Default: 30
+	EvictionStrategy string `yaml:"eviction_strategy"`  // "ttl" or "lru"; default: "ttl"
+	CDNURLTTLMinutes int    `yaml:"cdn_url_ttl_minutes"` // How long to cache CDN URLs; default: 120
 }
 
 // ThrottleConfig holds rate-limiting settings.
@@ -72,6 +74,12 @@ func setDefaults(c *Config) {
 	if c.Cache.TTLSeconds == 0 {
 		c.Cache.TTLSeconds = 30
 	}
+	if c.Cache.EvictionStrategy == "" {
+		c.Cache.EvictionStrategy = "ttl"
+	}
+	if c.Cache.CDNURLTTLMinutes == 0 {
+		c.Cache.CDNURLTTLMinutes = 120
+	}
 	if c.Throttle.RequestsPerMinute == 0 {
 		c.Throttle.RequestsPerMinute = 250
 	}
@@ -87,6 +95,9 @@ func setDefaults(c *Config) {
 func validate(c *Config) error {
 	if c.TorBox.APIKey == "" {
 		return fmt.Errorf("torbox.api_key is required")
+	}
+	if c.Cache.EvictionStrategy != "ttl" && c.Cache.EvictionStrategy != "lru" {
+		return fmt.Errorf("cache.eviction_strategy must be \"ttl\" or \"lru\", got %q", c.Cache.EvictionStrategy)
 	}
 	return nil
 }

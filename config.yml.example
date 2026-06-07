@@ -45,14 +45,32 @@ cache:
   chunk_size_mb: 16
 
   # Maximum RAM to use for cached chunks in megabytes.
-  # When this limit is reached, the oldest chunks are evicted to make room.
+  # When this limit is reached, chunks are evicted according to
+  # eviction_strategy to make room.
   # Optional. Default: 512. Valid range: 64–16384.
   max_ram_mb: 512
 
   # Time-to-live for cached chunks in seconds.
   # Chunks not accessed within this window are evicted from RAM.
+  # Only applies when eviction_strategy is "ttl".
   # Optional. Default: 30. Valid range: 5–86400 (1 second to 24 hours).
   ttl_seconds: 30
+
+  # Cache eviction strategy.
+  # - "ttl" — Evict chunks after ttl_seconds of inactivity. Simple and
+  #   predictable. Best for most use cases.
+  # - "lru" — Evict the least recently used chunks when max_ram_mb is
+  #   exceeded. More memory-efficient under pressure but slightly more
+  #   CPU overhead.
+  # Optional. Default: "ttl".
+  eviction_strategy: "ttl"
+
+  # How long to cache TorBox CDN download URLs in minutes.
+  # CDN URLs are valid for several hours. Caching them avoids a TorBox
+  # API call on every range request. Set to 0 to disable CDN URL caching
+  # (not recommended — increases API load).
+  # Optional. Default: 120. Valid range: 0–1440.
+  cdn_url_ttl_minutes: 120
 
 # ---------------------------------------------------------------------------
 # Rate-Limiting / Throttle

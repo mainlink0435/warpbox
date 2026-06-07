@@ -49,13 +49,14 @@ func New(cfg Config, store *metadata.Store, cache *cache.Buffer, torBox *torbox.
 }
 
 // registerRoutes sets up the HTTP handlers for WebDAV methods.
+// The ServeMux dispatches by path, then handleWebDAV dispatches by method.
 func (s *Server) registerRoutes() {
 	handler := http.HandlerFunc(s.handleWebDAV)
 	s.mux.Handle(s.root+"/", handler)
 	s.mux.Handle(s.root, handler)
 }
 
-// handleWebDAV dispatches WebDAV methods.
+// handleWebDAV dispatches WebDAV methods to the appropriate handler.
 func (s *Server) handleWebDAV(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
@@ -88,12 +89,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 // handleHead is the no-body variant of GET.
 func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement HEAD.
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
-// handlePropfind handles WebDAV directory listings.
-func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement PROPFIND using metadata.Store.ListDir.
+	slog.Debug("HEAD request", "path", r.URL.Path)
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
