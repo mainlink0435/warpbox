@@ -94,6 +94,14 @@ logging:
   # Optional. Default: "text".
   format: "text"
 
+  # Log verbosity level.
+  # - "debug" — Verbose logging including every PROPFIND/GET/HEAD request.
+  # - "info" — Normal operational messages.
+  # - "warn" — Warning conditions.
+  # - "error" — Error conditions only.
+  # Optional. Default: "info".
+  level: "debug"
+
 # ---------------------------------------------------------------------------
 # Metadata Sync
 # ---------------------------------------------------------------------------

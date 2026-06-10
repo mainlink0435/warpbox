@@ -51,6 +51,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Logging.Format != "text" {
 		t.Errorf("log_format = %q, want %q", cfg.Logging.Format, "text")
 	}
+	if cfg.Logging.Level != "info" {
+		t.Errorf("log_level = %q, want %q", cfg.Logging.Level, "info")
+	}
 	if cfg.Sync.IntervalMinutes != 5 {
 		t.Errorf("sync_interval = %d, want %d", cfg.Sync.IntervalMinutes, 5)
 	}
@@ -160,6 +163,55 @@ func TestLoadInvalidYAML(t *testing.T) {
 	_, err := Load(tmp)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")
+	}
+}
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string // slog.Level.String()
+	}{
+		{"debug", "DEBUG"},
+		{"info", "INFO"},
+		{"warn", "WARN"},
+		{"error", "ERROR"},
+		{"DEBUG", "DEBUG"},
+		{"Info", "INFO"},
+	}
+
+	for _, tt := range tests {
+		lvl, err := ParseLevel(tt.input)
+		if err != nil {
+			t.Errorf("ParseLevel(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if lvl.String() != tt.want {
+			t.Errorf("ParseLevel(%q) = %s, want %s", tt.input, lvl, tt.want)
+		}
+	}
+}
+
+func TestParseLevelInvalid(t *testing.T) {
+	_, err := ParseLevel("verbose")
+	if err == nil {
+		t.Error("expected error for invalid level 'verbose'")
+	}
+	_, err = ParseLevel("")
+	if err == nil {
+		t.Error("expected error for empty level")
+	}
+}
+
+func TestLoadInvalidLevel(t *testing.T) {
+	content := []byte("torbox:\n  api_key: \"key\"\nlogging:\n  level: \"verbose\"\n")
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for invalid logging level, got nil")
 	}
 }
 

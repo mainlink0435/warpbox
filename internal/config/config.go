@@ -3,7 +3,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +39,7 @@ type ThrottleConfig struct {
 // LoggingConfig holds logging preferences.
 type LoggingConfig struct {
 	Format string `yaml:"format"` // "text" or "json"; default: "text"
+	Level  string `yaml:"level"`  // "debug", "info", "warn", or "error"; default: "info"
 }
 
 // SyncConfig holds metadata sync settings.
@@ -86,6 +89,9 @@ func setDefaults(c *Config) {
 	if c.Logging.Format == "" {
 		c.Logging.Format = "text"
 	}
+	if c.Logging.Level == "" {
+		c.Logging.Level = "info"
+	}
 	if c.Sync.IntervalMinutes == 0 {
 		c.Sync.IntervalMinutes = 5
 	}
@@ -99,7 +105,27 @@ func validate(c *Config) error {
 	if c.Cache.EvictionStrategy != "ttl" && c.Cache.EvictionStrategy != "lru" {
 		return fmt.Errorf("cache.eviction_strategy must be \"ttl\" or \"lru\", got %q", c.Cache.EvictionStrategy)
 	}
+	if _, err := ParseLevel(c.Logging.Level); err != nil {
+		return fmt.Errorf("logging.level: %w", err)
+	}
 	return nil
+}
+
+// ParseLevel converts a string log level to slog.Level.
+// Valid values: "debug", "info", "warn", "error".
+func ParseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid level %q: must be debug, info, warn, or error", s)
+	}
 }
 
 // Load reads and parses the YAML config file at the given path.

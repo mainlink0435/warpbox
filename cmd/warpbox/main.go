@@ -38,16 +38,25 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Bootstrap a minimal logger so early errors are properly structured.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+
 	// --- Configuration ---
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
+		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 
 	// --- Structured logging ---
+	logLevel, err := config.ParseLevel(cfg.Logging.Level)
+	if err != nil {
+		slog.Error("invalid logging level", "level", cfg.Logging.Level, "error", err)
+		os.Exit(1)
+	}
+
 	var handler slog.Handler
-	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	opts := &slog.HandlerOptions{Level: logLevel}
 	if cfg.Logging.Format == "json" {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
@@ -61,6 +70,7 @@ func main() {
 		"listen_addr", cfg.Server.ListenAddr,
 		"webdav_root", cfg.Server.WebDAVRoot,
 		"log_format", cfg.Logging.Format,
+		"log_level", cfg.Logging.Level,
 	)
 
 	// --- TorBox API client ---
