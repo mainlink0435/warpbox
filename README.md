@@ -125,6 +125,10 @@ You are responsible for ensuring your use of warpbox complies with TorBox's curr
 
 See `.clinerules/source-control.md` for versioning conventions.
 
+## AI Usage
+
+This project is developed with heavy AI assistance. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for details.
+
 ## Status
 
 Active Development. Core WebDAV handlers (PROPFIND, GET with byte-range), CDN URL caching, metadata sync, and rate-limited throttle are implemented.
