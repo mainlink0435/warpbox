@@ -102,6 +102,17 @@ rclone mount warpbox: /mnt/warpbox \
   --daemon
 ```
 
+## TorBox Terms of Service Compliance
+
+Warpbox is designed to operate within TorBox's Terms of Service, available at [github.com/TorBox-App/hosted-terms_of_service](https://github.com/TorBox-App/hosted-terms_of_service).
+
+- **Rate limiting:** Warpbox's throttle queue enforces a configurable rate limit (default 250 requests/minute) to stay below TorBox's 300 RPM limit. It never bypasses or circumvents API rate limits.
+- **Private access:** All CDN URLs and content access tokens stay on your local machine. Warpbox does not share, cache publicly, or distribute any private access links.
+- **No account sharing:** Warpbox uses your own TorBox API key, configured locally. It does not bundle, resell, or distribute API keys.
+- **Fair usage:** Warpbox's architecture (SQLite metadata cache, JIT RAM buffering) minimises API calls rather than generating unnecessary requests.
+
+You are responsible for ensuring your use of warpbox complies with TorBox's current TOS. The TOS may change — refer to the canonical source linked above.
+
 ## Release Process
 
 1. Tag the current commit with a semantic version:
