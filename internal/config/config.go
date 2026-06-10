@@ -45,6 +45,7 @@ type LoggingConfig struct {
 // SyncConfig holds metadata sync settings.
 type SyncConfig struct {
 	IntervalMinutes int `yaml:"interval_minutes"` // Default: 5
+	Limit           int `yaml:"limit"`            // Max files to fetch per sync; default: 5000
 }
 
 // Config is the top-level Warpbox configuration.
@@ -94,6 +95,9 @@ func setDefaults(c *Config) {
 	}
 	if c.Sync.IntervalMinutes == 0 {
 		c.Sync.IntervalMinutes = 5
+	}
+	if c.Sync.Limit == 0 {
+		c.Sync.Limit = 5000
 	}
 }
 

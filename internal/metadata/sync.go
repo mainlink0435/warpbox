@@ -21,16 +21,19 @@ type SyncWorker struct {
 	client   *torbox.Client
 	queue    *throttle.Queue
 	interval time.Duration
+	limit    int
 }
 
 // NewSyncWorker creates a new metadata sync worker.
 // interval is how often to sync (e.g. 5 minutes).
-func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration) *SyncWorker {
+// limit is the max number of files to fetch per sync.
+func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, limit int) *SyncWorker {
 	return &SyncWorker{
 		store:    store,
 		client:   client,
 		queue:    queue,
 		interval: interval,
+		limit:    limit,
 	}
 }
 
@@ -78,7 +81,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 			torrents, err := w.client.ListFiles(ctx, torbox.ListFilesParams{
 				BypassCache: false,
 				Offset:      0,
-				Limit:       1000,
+				Limit:       w.limit,
 			})
 			resCh <- result{torrents, err}
 			return err

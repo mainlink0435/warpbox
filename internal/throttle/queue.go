@@ -24,6 +24,15 @@ type Queue struct {
 	queue      []Request
 	rate       time.Duration
 	lastCall   time.Time
+	totalCalls int64
+	callWindow []time.Time
+}
+
+// Stats returns throttle statistics for the landing page.
+type Stats struct {
+	TotalCalls       int64
+	CallsLastMinute  int
+	RequestsPerMinute int
 }
 
 // NewQueue creates a new throttle queue.
@@ -34,6 +43,28 @@ func NewQueue(requestsPerMinute int) *Queue {
 	}
 	q.cond = sync.NewCond(&q.mu)
 	return q
+}
+
+// Stats returns current throttle statistics.
+func (q *Queue) Stats() Stats {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	// Count calls in the last 60 seconds.
+	now := time.Now()
+	cutoff := now.Add(-60 * time.Second)
+	recent := 0
+	for _, t := range q.callWindow {
+		if t.After(cutoff) {
+			recent++
+		}
+	}
+
+	return Stats{
+		TotalCalls:        q.totalCalls,
+		CallsLastMinute:   recent,
+		RequestsPerMinute: int(time.Minute / q.rate),
+	}
 }
 
 // Enqueue adds a request to the blocking queue.
@@ -74,6 +105,13 @@ func (q *Queue) processLoop(ctx context.Context) {
 
 		q.mu.Lock()
 		q.lastCall = time.Now()
+		q.totalCalls++
+		q.callWindow = append(q.callWindow, q.lastCall)
+		// Keep the window trimmed to roughly the last 60 seconds.
+		cutoff := q.lastCall.Add(-60 * time.Second)
+		for len(q.callWindow) > 0 && q.callWindow[0].Before(cutoff) {
+			q.callWindow = q.callWindow[1:]
+		}
 		q.mu.Unlock()
 	}
 }
