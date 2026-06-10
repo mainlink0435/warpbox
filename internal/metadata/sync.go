@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/ben/warpbox/internal/throttle"
@@ -102,17 +103,26 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 			continue
 		}
 
+		// Skip torrents with empty file lists to avoid SHA hash entries.
+		if len(t.Files) == 0 {
+			slog.Debug("metadata sync: skipping torrent with no files", "id", t.ID, "name", t.Name)
+			continue
+		}
+
+		// Strip the ☐ (U+1F4C4) prefix that TorBox prepends to all torrent names.
+		torrentName := strings.TrimPrefix(t.Name, "\U0001F4C4 ")
+
 		for _, f := range t.Files {
-			// Build virtual path: torrent_name/filename
-			virtualPath := path.Join(t.Name, f.Name)
+			// Use ShortName to avoid double-nested paths (f.Name includes the torrent dir).
+			virtualPath := path.Join(torrentName, f.ShortName)
 
 			rec := FileRecord{
 				TorrentID: t.ID,
 				FileID:    f.ID,
-				Name:      f.Name,
+				Name:      f.ShortName,
 				Path:      virtualPath,
 				Size:      f.Size,
-				MimeType: f.MimeType,
+				MimeType:  f.MimeType,
 			}
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
