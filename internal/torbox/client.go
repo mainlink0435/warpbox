@@ -28,10 +28,11 @@ type Client struct {
 }
 
 // NewClient creates a new TorBox API client.
-// baseURL should be e.g. "https://api.torbox.app"
-func NewClient(baseURL, apiKey string) *Client {
+// The base URL is hardcoded to https://api.torbox.app — it is not configurable
+// because the TorBox API endpoint is stable and not user-serviceable.
+func NewClient(apiKey string) *Client {
 	return &Client{
-		baseURL: baseURL,
+		baseURL: "https://api.torbox.app",
 		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,

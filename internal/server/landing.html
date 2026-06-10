@@ -163,6 +163,8 @@
   <table>
     <tr><th colspan="2">Sync</th></tr>
     <tr><td>Interval</td><td>{{.SyncIntervalMinutes}} min</td></tr>
+    <tr><td>Last sync</td><td>{{if .APIBad}}<span style="color:#f87171">⚠</span> {{end}}{{.LastSyncTime}}</td></tr>
+    {{if .LastSyncError}}<tr><td>API error</td><td style="color:#f87171;font-size:0.75rem">{{.LastSyncError}}</td></tr>{{end}}
   </table>
 
   <table>

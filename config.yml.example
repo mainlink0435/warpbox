@@ -8,15 +8,9 @@
 # TorBox API Connection
 # ---------------------------------------------------------------------------
 torbox:
-  # Your TorBox API key.
-  # This is required. Obtain it from your TorBox account dashboard.
-  # Type: string. Required: yes. Valid: any non-empty API token.
+  # Your TorBox API key (required).
+  # Obtain it from your TorBox account dashboard.
   api_key: ""
-
-  # Base URL for the TorBox API.
-  # Optional. Default: "https://api.torbox.app/v1"
-  # Type: string (URL). Valid: any HTTPS endpoint returning the TorBox API.
-  base_url: "https://api.torbox.app/v1"
 
 # ---------------------------------------------------------------------------
 # WebDAV Server Settings

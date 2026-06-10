@@ -12,8 +12,7 @@ import (
 
 // TorBoxConfig holds connection details for the TorBox API.
 type TorBoxConfig struct {
-	APIKey  string `yaml:"api_key"`  // Required
-	BaseURL string `yaml:"base_url"` // Default: https://api.torbox.app/v1
+	APIKey string `yaml:"api_key"` // Required
 }
 
 // ServerConfig holds the WebDAV server settings.
@@ -60,9 +59,6 @@ type Config struct {
 
 // setDefaults fills in default values for any zero-valued fields.
 func setDefaults(c *Config) {
-	if c.TorBox.BaseURL == "" {
-		c.TorBox.BaseURL = "https://api.torbox.app"
-	}
 	if c.Server.ListenAddr == "" {
 		c.Server.ListenAddr = ":1412"
 	}
@@ -143,10 +139,6 @@ const defaultConfigYAML = `# Warpbox Configuration
 torbox:
   # Your TorBox API key (required).
   api_key: "YOUR_API_KEY_HERE"
-
-  # Base URL for the TorBox API.
-  # Optional. Default: "https://api.torbox.app/v1"
-  base_url: "https://api.torbox.app/v1"
 
 # ---------------------------------------------------------------------------
 # WebDAV Server Settings

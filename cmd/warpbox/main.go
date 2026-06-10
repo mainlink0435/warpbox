@@ -94,7 +94,7 @@ func main() {
 	)
 
 	// --- TorBox API client ---
-	torBoxClient := torbox.NewClient(cfg.TorBox.BaseURL, cfg.TorBox.APIKey)
+	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
 
 	// --- Metadata store (SQLite WAL) ---
 	dbDir := filepath.Dir(*dbPath)
@@ -177,6 +177,7 @@ func main() {
 		torBoxClient,
 		throttleQueue,
 	)
+	srv.SetSyncStatus(syncWorker.Status)
 
 	// Start the server in a goroutine.
 	serverErr := make(chan error, 1)

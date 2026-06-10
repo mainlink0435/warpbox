@@ -61,6 +61,9 @@ type LandingData struct {
 	LogLevel             string
 	APICallsTotal        int64
 	APICallsLastMinute   int
+	LastSyncTime         string // human-readable time of last successful sync
+	LastSyncError        string // empty if last sync succeeded
+	APIBad               bool   // true if there's a sync error to highlight
 }
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
@@ -87,6 +90,23 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	// Throttle stats.
 	throttleStats := s.queue.Stats()
 
+	// Sync status (API health).
+	lastSyncTime := ""
+	lastSyncErr := ""
+	apiBad := false
+	if s.syncStatus != nil {
+		st := s.syncStatus()
+		lastSyncErr = st.LastError
+		if lastSyncErr != "" {
+			apiBad = true
+		}
+		if !st.LastSuccess.IsZero() {
+			lastSyncTime = formatDuration(time.Since(st.LastSuccess)) + " ago"
+		} else {
+			lastSyncTime = "never"
+		}
+	}
+
 	data := LandingData{
 		Version:             s.cfg.Version,
 		Uptime:              uptimeStr,
@@ -112,6 +132,9 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		LogLevel:            s.cfg.LogLevel,
 		APICallsTotal:       throttleStats.TotalCalls,
 		APICallsLastMinute:  throttleStats.CallsLastMinute,
+		LastSyncTime:        lastSyncTime,
+		LastSyncError:       lastSyncErr,
+		APIBad:              apiBad,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

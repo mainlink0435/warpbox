@@ -59,48 +59,54 @@ rclone mount warpbox: /mnt/warpbox \
   --daemon
 ```
 
-### Performance flags
+For a quick one-liner (Windows or single-line shell):
+```
+rclone mount warpbox: Z: --webdav-url http://localhost:1412/webdav/ --webdav-vendor other --buffer-size 16M --vfs-cache-mode full --vfs-read-ahead 0 --vfs-cache-max-age 720h --transfers 2 --checkers 8 --no-checksum --timeout 60s --contimeout 30s --low-level-retries 3
+```
+
+### Recommended flags
 
 | Flag | Recommended Value | Why |
 |---|---|---|
-| `--buffer-size` | `16M` | Matches Warpbox's default chunk_size_mb. Larger values cause double-buffering. |
-| `--vfs-cache-mode` | `writes` or `full` | Warpbox handles read caching internally. VFS write cache prevents re-fetching on partial writes. `full` adds local file cache for frequently accessed files. |
-| `--vfs-read-ahead` | `0` (disabled) | Warpbox already does JIT read-ahead. rclone pre-fetching would cause unnecessary API calls. |
-| `--vfs-cache-max-age` | `30s` | Aligns with Warpbox's default cache TTL. Keeps rclone's local cache in sync with Warpbox's in-memory chunks. |
-| `--transfers` | `2` | Keeps concurrent transfers low to avoid overwhelming the throttle queue. |
-| `--checkers` | `4` | Warpbox serves PROPFIND from SQLite (near-instant), so many checkers are safe. |
+| `--buffer-size` | `16M` | Matches Warpbox's default chunk size. One rclone buffer = one Warpbox chunk. Smaller values cause more CDN round-trips; larger causes double-buffering waste. |
+| `--vfs-cache-mode` | `full` | **Required for disk caching.** Warpbox only does JIT read-ahead into RAM (512 MB, 30-second TTL). It does NOT persist files to disk. Without `full` mode, you will re-download the entire file every time you scrub or seek back. rclone's VFS disk cache is the *only* persistent cache. |
+| `--vfs-read-ahead` | `0` | Warpbox already fetches 16 MB ahead per chunk. rclone pre-fetching would leapfrog the buffer and trigger unnecessary CDN URL requests. |
+| `--vfs-cache-max-age` | `720h` (30 days) | Warpbox's 30-second RAM TTL and rclone's VFS cache age are unrelated. Set this to match TorBox's retention window (30 days) so cached files persist locally. |
+| `--transfers` | `2` | Conservative concurrency. Files download once in `full` mode, so 2 concurrent transfers won't overwhelm the throttle. |
+| `--checkers` | `8` | PROPFIND queries hit SQLite directly (zero API calls). More checkers mean faster library scans with no downside. |
 | `--no-checksum` | (use flag) | Prevents rclone from reading every file to compute checksums, which would trigger CDN URL requests. |
-| `--vfs-read-wait` | `100ms` | Time for Warpbox to fetch a CDN URL and begin streaming before rclone retries. |
+| `--timeout` | `60s` | Covers throttle queue delays under load. |
+| `--contimeout` | `30s` | Connection timeout for the initial WebDAV handshake. |
+| `--low-level-retries` | `3` | CDN proxying may transiently fail; rclone should retry before reporting an error. |
 
-### Stability flags
-
-| Flag | Recommended Value | Why |
-|---|---|---|
-| `--timeout` | `60s` | Warpbox's throttle can delay requests by up to 250ms per call under load. |
-| `--contimeout` | `30s` | Connection timeout for initial WebDAV handshake. |
-| `--low-level-retries` | `3` | Warpbox's CDN proxy may transiently fail; rclone should retry. |
-| `--max-stats-groups` | `0` | Disable stats groups to reduce background PROPFIND calls. |
-
-### Example full command
+### Full example (Linux/macOS with daemon)
 
 ```
 rclone mount warpbox: /mnt/warpbox \
   --webdav-url http://localhost:1412/webdav/ \
   --webdav-vendor other \
   --buffer-size 16M \
-  --vfs-cache-mode writes \
+  --vfs-cache-mode full \
   --vfs-read-ahead 0 \
-  --vfs-cache-max-age 30s \
+  --vfs-cache-max-age 720h \
   --transfers 2 \
-  --checkers 4 \
+  --checkers 8 \
   --no-checksum \
-  --vfs-read-wait 100ms \
   --timeout 60s \
   --contimeout 30s \
   --low-level-retries 3 \
-  --max-stats-groups 0 \
   --daemon
 ```
+
+### Deprecated flags (removed)
+
+The following flags were present in earlier versions of this README but have been removed because they were incorrect or counterproductive:
+
+| Flag | Why it was removed |
+|---|---|
+| `--max-stats-groups 0` | Setting this to 0 breaks rclone. Stats groups are internal memory accounting, not network calls. The claim that it "reduces background PROPFIND calls" was factually wrong. |
+| `--vfs-read-wait 100ms` | Only applies when the VFS cache has stale entries. With `full` mode and a long `--vfs-cache-max-age`, the cache is never stale. Dead flag. |
+| `--vfs-cache-mode writes` | Warpbox is read-only; no writes ever occur. `writes` mode provides zero disk caching. Only `full` mode gives you persistent file caching for seeking and scrubbing. |
 
 ## TorBox Terms of Service Compliance
 

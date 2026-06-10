@@ -18,16 +18,20 @@ import (
 	"github.com/ben/warpbox/internal/torbox"
 )
 
+// SyncStatusFunc is a callback that returns the current sync status.
+type SyncStatusFunc func() metadata.SyncStatus
+
 // Server is the Warpbox WebDAV server.
 type Server struct {
-	cfg       Config
-	store     *metadata.Store
-	cache     *cache.Buffer
-	torBox    *torbox.Client
-	queue     *throttle.Queue
-	root      string
-	mux       *http.ServeMux
-	startTime time.Time
+	cfg        Config
+	store      *metadata.Store
+	cache      *cache.Buffer
+	torBox     *torbox.Client
+	queue      *throttle.Queue
+	root       string
+	mux        *http.ServeMux
+	startTime  time.Time
+	syncStatus SyncStatusFunc
 }
 
 // Config holds the server-specific configuration.
@@ -117,6 +121,11 @@ func (s *Server) handleWebDAV(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// SetSyncStatus configures the callback for reading sync worker status.
+func (s *Server) SetSyncStatus(fn SyncStatusFunc) {
+	s.syncStatus = fn
 }
 
 // handleOptions responds with WebDAV capabilities.

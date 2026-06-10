@@ -17,11 +17,27 @@ import (
 
 // SyncWorker periodically synchronises the TorBox file listing into SQLite.
 type SyncWorker struct {
-	store    *Store
-	client   *torbox.Client
-	queue    *throttle.Queue
-	interval time.Duration
-	limit    int
+	store       *Store
+	client      *torbox.Client
+	queue       *throttle.Queue
+	interval    time.Duration
+	limit       int
+	lastError   error
+	lastSuccess time.Time
+}
+
+// SyncStatus describes the state of the most recent metadata sync.
+type SyncStatus struct {
+	LastSuccess time.Time // zero if never succeeded
+	LastError   string    // empty if last sync succeeded
+}
+
+// Status returns the outcome of the most recent sync cycle.
+func (w *SyncWorker) Status() SyncStatus {
+	return SyncStatus{
+		LastSuccess: w.lastSuccess,
+		LastError:   errorString(w.lastError),
+	}
 }
 
 // NewSyncWorker creates a new metadata sync worker.
@@ -63,6 +79,14 @@ func (w *SyncWorker) SyncNow() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	w.syncOnce(ctx)
+}
+
+// errorString converts an error to a string, returning "" for nil.
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // syncOnce performs a single sync cycle through the throttle queue.
@@ -182,6 +206,18 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 			}
 			count++
 		}
+	}
+
+	// Track sync status.
+	var syncErr error
+	if torRes.err != nil {
+		syncErr = torRes.err
+	} else if usenetRes.err != nil {
+		syncErr = usenetRes.err
+	}
+	w.lastError = syncErr
+	if syncErr == nil {
+		w.lastSuccess = time.Now()
 	}
 
 	slog.Debug("metadata sync complete", "files_synced", count)
