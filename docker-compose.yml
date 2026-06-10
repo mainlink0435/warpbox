@@ -1,22 +1,3 @@
-# Warpbox — Docker Compose
-#
-# Pulls the pre-built image from the Gitea container registry.
-# For ad-hoc local builds, use docker-compose.dev.yml instead.
-#
-# Quick start:
-#   1. Create ./data/config.yml with your TorBox API key:
-#        torbox:
-#          api_key: "your-key-here"
-#   2. docker compose up -d
-#   3. Point rclone to http://localhost:1412/webdav/
-#
-# The warpbox.db (SQLite metadata cache) is persisted in ./data/ so
-# restarts are fast — no need to re-sync from TorBox on every boot.
-#
-# Note: To pull from the Gitea registry you may need to authenticate first:
-#   docker login REDACTED -u <username>
-# Or use a Gitea token as the password for CI/headless setups.
-
 services:
   warpbox:
     image: REDACTED/ben/warpbox:0.0.1-amd64
