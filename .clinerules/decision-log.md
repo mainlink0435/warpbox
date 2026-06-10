@@ -62,6 +62,18 @@
   - A single `active-context.md` duplicated the issue tracker and was never the authoritative source of truth.
 - **Outcome:** Work tracking lives in Gitea Issues. The decision log remains only for non-obvious architectural/technical choices.
 
+## D-007: Gitea Projects + Wiki for agile workflow
+
+- **Date:** 2026-06-11
+- **Context:** The repo had 11 open issues with no project board, no milestones (deferred), and no structured workflow. The Testing Suite issue (#51) was too large and evolving for a single issue — it needed a living document.
+- **Decision:** Created the "Warpbox Kanban" project board with 6 columns (Backlog → Research/Spikes → Ready to Dev → In Progress → Review/QA → Done) and a WIP limit of 2. Moved Research issues (#43, #53, #54) to the Spikes column. Created new labels (`testing`, `research`, `architecture`, `refactor`, `breaking`). Moved the Testing Suite strategy to the Gitea Wiki as a living page, with issue #51 serving as a tracker.
+- **Rationale:**
+  - A solo developer Kanban board gives visual priority ordering without requiring milestones.
+  - The Research column gives architecture discussions a visible home without blocking the dev pipeline.
+  - The Wiki is the right place for a testing strategy that evolves over time; the issue tracks completion.
+  - Updated `.clinerules/source-control.md` and `.clinerules/system-patterns.md` so future AI sessions follow the same rules.
+- **Outcome:** Codified in the `.clinerules/` rules files. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
+
 ## D-005: CGO dependency via mattn/go-sqlite3
 
 - **Date:** 2026-06-07

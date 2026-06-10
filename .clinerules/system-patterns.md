@@ -38,10 +38,26 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 
 * All feature requests, bugs, enhancements, and documentation tasks are tracked
   as Gitea Issues in the `ben/warpbox` repository.
+* The **"Warpbox Kanban"** Gitea Project board defines the workflow:
+  📥 Backlog → 🧠 Research/Spikes → 📋 Ready to Dev → 🚧 In Progress → 👀 Review/QA → ✅ Done
+* WIP limits: maximum 2 issues in "In Progress" and 2 in "Review/QA" at any time.
+  Finish (or move back) existing work before pulling new items.
+* Every issue MUST carry at least one type label: `bug`, `enhancement`,
+  `testing`, `research`, `architecture`, `docs`, `infra`, or `refactor`.
 * The AI assistant uses the `gitea-mcp` server to create, read, update, and
-  search issues. Labels (`bug`, `enhancement`, `docs`, `infra`,
-  `priority:low/med/high`) and milestones keep the backlog organized.
-* Implementation commits reference issues (e.g., `fix: handle 401 expiry, closes #12`). The issue stays open until the fix is verified in deployment.
+  search issues, and to manage the Kanban board.
+* Implementation commits reference issues (e.g., `fix: handle CDN expiry, refs #28`).
+  The issue stays open until the fix is verified in deployment.
 * Before starting any non-trivial work, consult the issue tracker — not the
   chat history — for context and priorities.
-* Ensure you update the issues as you iterate through and work on them, and complete them etc.
+* When an issue is completed, move it to ✅ Done on the board, then close it
+  manually via `issue_write` (method: `update`, state: `closed`).
+
+## 8. Wiki Usage
+
+* Living specifications, testing strategies, architecture decision records
+  (beyond the decision log), and onboarding guides belong in the Gitea Wiki.
+* Issues are for actionable, completable units of work. If content will be
+  continually updated over time (e.g., a test plan), it belongs in the Wiki.
+* When an issue's scope expands into a living document, create a Wiki page
+  and link it from the issue.
