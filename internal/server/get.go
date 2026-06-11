@@ -217,30 +217,194 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// CDN URL helpers
+// CDN URL helpers — retry, backoff, negative cache, circuit breaker
 // ---------------------------------------------------------------------------
 
-// fetchCDNURL enqueues a GetDownloadURL call through the throttle queue and
-// returns the fresh CDN URL. All retries from auto-repair go through this
-// same queue, so they count towards the total API call rate.
-func (s *Server) fetchCDNURL(torrentID, fileID int64) (string, error) {
+// cdnCacheKey builds a map key from torrent_id and file_id.
+func cdnCacheKey(torrentID, fileID int64) string {
+	return fmt.Sprintf("%d:%d", torrentID, fileID)
+}
+
+// isTorrentStale checks whether a torrent has been marked stale by the circuit
+// breaker. Stale torrents skip API calls entirely.
+func (s *Server) isTorrentStale(torrentID int64) bool {
+	s.torrentFailuresMu.Lock()
+	defer s.torrentFailuresMu.Unlock()
+
+	tracker, exists := s.torrentFailures[torrentID]
+	if !exists {
+		return false
+	}
+	if time.Now().Before(tracker.staleUntil) {
+		slog.Warn("circuit breaker: torrent marked stale, skipping CDN URL fetch",
+			"torrent_id", torrentID,
+			"stale_until", tracker.staleUntil.Format(time.RFC3339),
+		)
+		return true
+	}
+	// Stale period expired — remove the tracker so we try again.
+	delete(s.torrentFailures, torrentID)
+	slog.Info("circuit breaker: torrent stale period expired, will retry",
+		"torrent_id", torrentID,
+	)
+	return false
+}
+
+// recordTorrentFailure records a failure for the given torrent. If the failure
+// count exceeds cfg.CircuitBreakerFailures within cfg.CircuitBreakerWindowSec,
+// the torrent is marked stale for cfg.CircuitBreakerStaleMin minutes.
+func (s *Server) recordTorrentFailure(torrentID int64) {
+	s.torrentFailuresMu.Lock()
+	defer s.torrentFailuresMu.Unlock()
+
+	now := time.Now()
+	tracker, exists := s.torrentFailures[torrentID]
+	if !exists {
+		tracker = &torrentFailureTracker{}
+		s.torrentFailures[torrentID] = tracker
+	}
+
+	// Prune failures outside the sliding window.
+	window := time.Duration(s.cfg.CircuitBreakerWindowSec) * time.Second
+	cutoff := now.Add(-window)
+	var active []time.Time
+	for _, t := range tracker.failures {
+		if t.After(cutoff) {
+			active = append(active, t)
+		}
+	}
+	active = append(active, now)
+	tracker.failures = active
+
+	if len(active) >= s.cfg.CircuitBreakerFailures {
+		staleDur := time.Duration(s.cfg.CircuitBreakerStaleMin) * time.Minute
+		tracker.staleUntil = now.Add(staleDur)
+		slog.Warn("circuit breaker: torrent exceeded failure threshold, marking stale",
+			"torrent_id", torrentID,
+			"failures", len(active),
+			"window_seconds", window.Seconds(),
+			"threshold", s.cfg.CircuitBreakerFailures,
+			"stale_duration_minutes", s.cfg.CircuitBreakerStaleMin,
+			"stale_until", tracker.staleUntil.Format(time.RFC3339),
+		)
+	}
+}
+
+// getCDNURLWithRetry enqueues a GetDownloadURL call through the throttle queue
+// and returns the fresh CDN URL. On failure it retries with exponential backoff
+// (cfg.CDNURLRetryBackoff * 1s, * 2s, * 4s, etc.) for up to cfg.CDNURLRetryCount
+// attempts. 429 responses use a 5s backoff instead.
+func (s *Server) getCDNURLWithRetry(torrentID, fileID int64) (string, error) {
+	maxRetries := s.cfg.CDNURLRetryCount
+	baseBackoff := time.Duration(s.cfg.CDNURLRetryBackoff) * time.Second
+
 	type result struct {
 		url string
 		err error
 	}
-	resCh := make(chan result, 1)
 
-	s.queue.Enqueue(throttle.Request{
-		Label: fmt.Sprintf("fetch CDN URL for file %d", fileID),
-		Execute: func(ctx context.Context) error {
-			url, err := s.torBox.GetDownloadURL(ctx, torrentID, fileID, false)
-			resCh <- result{url, err}
-			return err
-		},
-	})
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resCh := make(chan result, 1)
 
-	res := <-resCh
-	return res.url, res.err
+		s.queue.Enqueue(throttle.Request{
+			Label: fmt.Sprintf("fetch CDN URL for file %d (attempt %d/%d)", fileID, attempt+1, maxRetries+1),
+			Execute: func(ctx context.Context) error {
+				url, err := s.torBox.GetDownloadURL(ctx, torrentID, fileID, false)
+				resCh <- result{url, err}
+				return err
+			},
+		})
+
+		res := <-resCh
+
+		if res.err == nil {
+			return res.url, nil
+		}
+
+		// Check if the error is retryable. 429 and 5xx are retryable.
+		errStr := res.err.Error()
+		isRetryable := strings.Contains(errStr, "unexpected status 429") ||
+			strings.Contains(errStr, "unexpected status 5")
+
+		if !isRetryable || attempt >= maxRetries {
+			// Non-retryable or out of attempts — record and return.
+			s.recordTorrentFailure(torrentID)
+			slog.Warn("CDN URL fetch failed, non-retryable or exhausted",
+				"torrent_id", torrentID,
+				"file_id", fileID,
+				"attempt", attempt+1,
+				"max_attempts", maxRetries+1,
+				"retry_backoff_base", s.cfg.CDNURLRetryBackoff,
+				"error", res.err,
+			)
+			return "", res.err
+		}
+
+		// Exponential backoff: base * 2^attempt
+		wait := baseBackoff * (1 << attempt)
+		// 429 rate-limit errors get a long 30s backoff. Once TorBox rate-limits,
+		// we need to give it breathing room rather than retrying aggressively.
+		if strings.Contains(errStr, "unexpected status 429") {
+			wait = 30 * time.Second
+		}
+		slog.Warn("CDN URL fetch failed, retrying with backoff",
+			"torrent_id", torrentID,
+			"file_id", fileID,
+			"attempt", attempt+1,
+			"max_attempts", maxRetries+1,
+			"backoff_seconds", wait.Seconds(),
+			"error", res.err,
+		)
+		time.Sleep(wait)
+	}
+
+	return "", fmt.Errorf("torbox: CDN URL fetch exhausted after %d retries", maxRetries)
+}
+
+// fetchCDNURL is the public entry point for handleGet to obtain a CDN URL.
+// It checks the negative cache and circuit breaker before making any API calls.
+func (s *Server) fetchCDNURL(torrentID, fileID int64) (string, error) {
+	key := cdnCacheKey(torrentID, fileID)
+
+	// 1. Check negative cache for a recent failure on this exact file.
+	s.negativeCacheMu.Lock()
+	entry, found := s.negativeCache[key]
+	if found {
+		if time.Now().Before(entry.expiresAt) {
+			s.negativeCacheMu.Unlock()
+			slog.Debug("negative cache hit, skipping CDN URL fetch",
+				"torrent_id", torrentID,
+				"file_id", fileID,
+				"error", entry.err,
+			)
+			return "", entry.err
+		}
+		// Expired — clean up.
+		delete(s.negativeCache, key)
+	}
+	s.negativeCacheMu.Unlock()
+
+	// 2. Check circuit breaker for this torrent.
+	if s.isTorrentStale(torrentID) {
+		return "", fmt.Errorf("torrent %d is marked stale by circuit breaker", torrentID)
+	}
+
+	// 3. Attempt the API call with retry.
+	cdnURL, err := s.getCDNURLWithRetry(torrentID, fileID)
+	if err != nil {
+		// Cache the error in the negative cache so subsequent requests for the
+		// same file fail fast without hitting the API.
+		ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
+		s.negativeCacheMu.Lock()
+		s.negativeCache[key] = &negativeCacheEntry{
+			err:       err,
+			expiresAt: time.Now().Add(ttl),
+		}
+		s.negativeCacheMu.Unlock()
+		return "", err
+	}
+
+	return cdnURL, nil
 }
 
 // ---------------------------------------------------------------------------

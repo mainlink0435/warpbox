@@ -13,10 +13,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/ben/warpbox/internal/cache"
 	"github.com/ben/warpbox/internal/config"
 	"github.com/ben/warpbox/internal/metadata"
 	"github.com/ben/warpbox/internal/server"
@@ -46,6 +46,8 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 
 	// --- Configuration ---
+	// Auto-generate a default config if the file doesn't exist, then continue
+	// so the user sees the API error and knows what to fix.
 	if created, err := config.GenerateTemplate(*configPath); err != nil {
 		slog.Error("failed to generate default config", "error", err)
 		os.Exit(1)
@@ -59,32 +61,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Structured logging with dynamic level switching ---
+	// --- Structured logging ---
 	logLevel, err := config.ParseLevel(cfg.Logging.Level)
 	if err != nil {
 		slog.Error("invalid logging level", "level", cfg.Logging.Level, "error", err)
 		os.Exit(1)
 	}
 
-	// Use a LevelVar for atomic runtime log level switching.
-	levelVar := &slog.LevelVar{}
-	levelVar.Set(logLevel)
-
 	var handler slog.Handler
-	opts := &slog.HandlerOptions{Level: levelVar}
+	opts := &slog.HandlerOptions{Level: logLevel}
 	if cfg.Logging.Format == "json" {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 
+	// Wrap the handler with a ring buffer for the /logs/ endpoint.
 	bufHandler := server.NewRingBufferHandler(handler)
 	server.SetLogBuffer(bufHandler)
 	logger := slog.New(bufHandler)
 	slog.SetDefault(logger)
-	if cfg.Logging.Level != "info" {
-		slog.Warn("log level is not info — this may affect performance in production", "level", cfg.Logging.Level)
-	}
 
 	fmt.Print(banner)
 	fmt.Printf("\nwarpbox %s — WebDAV proxy for TorBox\n\n", Version)
@@ -97,6 +93,10 @@ func main() {
 		"log_level", cfg.Logging.Level,
 	)
 
+	// --- TorBox API client ---
+	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
+
+	// --- Metadata store (SQLite WAL) ---
 	dbDir := filepath.Dir(*dbPath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		slog.Error("creating database directory", "dir", dbDir, "error", err)
@@ -109,16 +109,30 @@ func main() {
 	}
 	defer metadataStore.Close()
 
+	// --- RAM cache ---
+	evictionStrategy := cache.StrategyTTL
+	if cfg.Cache.EvictionStrategy == "lru" {
+		evictionStrategy = cache.StrategyLRU
+	}
+	ramCache := cache.NewBuffer(
+		cfg.Cache.MaxRAMMB*1024*1024,    // bytes
+		cfg.Cache.ChunkSizeMB*1024*1024, // bytes per chunk
+		time.Duration(cfg.Cache.TTLSeconds)*time.Second,
+		evictionStrategy,
+	)
+	defer ramCache.Stop()
+
+	// --- Throttle queue ---
 	throttleQueue := throttle.NewQueue(cfg.Throttle.RequestsPerMinute)
 
-	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
-	torBoxClient.HTTP429Callback = func() { throttleQueue.Record429() }
-
+	// --- Context for graceful shutdown ---
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Start the throttle processing loop.
 	throttleQueue.Start(ctx)
 
+	// --- Metadata sync worker ---
 	syncWorker := metadata.NewSyncWorker(
 		metadataStore,
 		torBoxClient,
@@ -128,50 +142,52 @@ func main() {
 	)
 	go syncWorker.Start(ctx)
 
+	// --- Action callbacks ---
 	server.SetActions(
+		// Resync: triggers an immediate metadata sync.
 		func() error {
 			syncWorker.SyncNow()
 			return nil
 		},
+		// Clear cache: evicts all RAM cached chunks.
+		func() error {
+			ramCache.Clear()
+			return nil
+		},
 	)
 
-	// Wire the LevelVar into the server config for runtime log level toggle.
-	serverCfg := server.Config{
-		ListenAddr:              cfg.Server.ListenAddr,
-		WebDAVRoot:              cfg.Server.WebDAVRoot,
-		CDNTtlMinutes:           cfg.Cache.CDNURLTTLMinutes,
-		CDNURLAutoRepair:        *cfg.Cache.CDNURLAutoRepair,
-		CDNURLRepairRetries:     *cfg.Cache.CDNURLRepairRetries,
-		Version:                 Version,
-		RequestsPerMinute:       cfg.Throttle.RequestsPerMinute,
-		LogFormat:               cfg.Logging.Format,
-		LogLevel:                cfg.Logging.Level,
-		SyncIntervalMinute:      cfg.Sync.IntervalMinutes,
-		CDNURLRetryBackoff:      *cfg.Cache.CDNURLRetryBackoff,
-		CDNURLRetryCount:        *cfg.Cache.CDNURLRetryCount,
-		NegativeCacheTTLSeconds: *cfg.Cache.NegativeCacheTTLSeconds,
-		CircuitBreakerFailures:  *cfg.Cache.CircuitBreakerFailures,
-		CircuitBreakerWindowSec: *cfg.Cache.CircuitBreakerWindowSec,
-		CircuitBreakerStaleMin:  *cfg.Cache.CircuitBreakerStaleMin,
-		NegativeCacheMaxEntries:  *cfg.Cache.NegativeCacheMaxEntries,
-		CircuitBreakerMaxEntries: *cfg.Cache.CircuitBreakerMaxEntries,
-		CleanupIntervalSeconds:  *cfg.Cache.CleanupIntervalSeconds,
-		MaxCDNConnections:       *cfg.Cache.MaxCDNConnections,
-		ConfigPath:              *configPath,
-		StatsIntervalSeconds:    cfg.Stats.IntervalSeconds,
-		StatsRetentionHours:     cfg.Stats.RetentionHours,
-		StatsChartMinutes:       cfg.Stats.ChartMinutes,
-	}
-	serverCfg.LevelVar = levelVar
-
+	// --- WebDAV server ---
 	srv := server.New(
-		serverCfg,
+		server.Config{
+			ListenAddr:             cfg.Server.ListenAddr,
+			WebDAVRoot:             cfg.Server.WebDAVRoot,
+			CDNTtlMinutes:          cfg.Cache.CDNURLTTLMinutes,
+			CDNURLAutoRepair:       *cfg.Cache.CDNURLAutoRepair,
+			CDNURLRepairRetries:    *cfg.Cache.CDNURLRepairRetries,
+			Version:               Version,
+			MaxRAMMB:              cfg.Cache.MaxRAMMB,
+			ChunkSizeMB:           cfg.Cache.ChunkSizeMB,
+			TTLSeconds:            cfg.Cache.TTLSeconds,
+			EvictionStrategy:      cfg.Cache.EvictionStrategy,
+			RequestsPerMinute:     cfg.Throttle.RequestsPerMinute,
+			LogFormat:             cfg.Logging.Format,
+			LogLevel:              cfg.Logging.Level,
+			SyncIntervalMinute:    cfg.Sync.IntervalMinutes,
+			CDNURLRetryBackoff:    *cfg.Cache.CDNURLRetryBackoff,
+			CDNURLRetryCount:      *cfg.Cache.CDNURLRetryCount,
+			NegativeCacheTTLSeconds: *cfg.Cache.NegativeCacheTTLSeconds,
+			CircuitBreakerFailures:  *cfg.Cache.CircuitBreakerFailures,
+			CircuitBreakerWindowSec: *cfg.Cache.CircuitBreakerWindowSec,
+			CircuitBreakerStaleMin:  *cfg.Cache.CircuitBreakerStaleMin,
+		},
 		metadataStore,
+		ramCache,
 		torBoxClient,
 		throttleQueue,
 	)
 	srv.SetSyncStatus(syncWorker.Status)
 
+	// Start the server in a goroutine.
 	serverErr := make(chan error, 1)
 	go func() {
 		if err := srv.Start(ctx); err != nil {
@@ -179,44 +195,9 @@ func main() {
 		}
 	}()
 
-	memStatsInterval := time.Duration(*cfg.Cache.MemoryStatsIntervalMin) * time.Minute
-	go func() {
-		memTicker := time.NewTicker(memStatsInterval)
-		defer memTicker.Stop()
-		for {
-			select {
-			case <-memTicker.C:
-				var mem runtime.MemStats
-				runtime.ReadMemStats(&mem)
-				slog.Info("memory stats",
-					"alloc_mb", mem.Alloc/(1024*1024),
-					"total_alloc_mb", mem.TotalAlloc/(1024*1024),
-					"sys_mb", mem.Sys/(1024*1024),
-					"gc_cycles", mem.NumGC,
-					"heap_objects", mem.HeapObjects,
-					"negative_cache", srv.NegativeCacheSize(),
-					"circuit_breaker", srv.CircuitBreakerSize(),
-					"db_lock_errors", metadataStore.DBLockErrors(),
-				)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Fetch TorBox user info at startup.
-	go func() {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if ui, err := torBoxClient.GetUserInfo(ctx); err != nil {
-			slog.Warn("failed to fetch TorBox user info", "error", err)
-		} else {
-			srv.SetTorBoxUserInfo(ui)
-		}
-	}()
-
 	slog.Info("warpbox ready", "version", Version)
 
+	// Block until signal or server error.
 	select {
 	case <-ctx.Done():
 		slog.Info("shutting down warpbox")

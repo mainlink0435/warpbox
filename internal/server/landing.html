@@ -157,6 +157,8 @@
     <tr><th colspan="2">Throttle</th></tr>
     <tr><td>Rate limit</td><td>{{.RequestsPerMinute}} req/min</td></tr>
     <tr><td>Total API calls</td><td>{{.APICallsTotal}}</td></tr>
+    <tr><td>Successful calls</td><td>{{.APISuccessfulCalls}}</td></tr>
+    <tr><td>Failed calls</td><td>{{if .APIFailedCalls}}<span style="color:#f87171">{{.APIFailedCalls}}</span>{{else}}{{.APIFailedCalls}}{{end}}</td></tr>
     <tr><td>Calls last minute</td><td>{{.APICallsLastMinute}}</td></tr>
   </table>
 

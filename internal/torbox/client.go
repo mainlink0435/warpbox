@@ -251,8 +251,28 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Log non-200 response bodies for diagnosis. TorBox usually includes
+		// a detail/error message in the JSON body explaining why (e.g. expired
+		// torrent, invalid file_id, rate limit, etc.).
+		// Strip the token query param from the URL before logging to avoid
+		// leaking the API key. url.Redacted() only masks the userinfo portion
+		// of URLs, not query parameters.
+		slog.Warn("torbox non-200 response",
+			"status", resp.StatusCode,
+			"endpoint", req.URL.Path,
+			"body", truncateBody(body),
+		)
 		return nil, fmt.Errorf("torbox: unexpected status %d", resp.StatusCode)
 	}
 
 	return body, nil
+}
+
+// truncateBody truncates a response body to a reasonable length for logging.
+func truncateBody(body []byte) string {
+	const maxLen = 512
+	if len(body) <= maxLen {
+		return string(body)
+	}
+	return string(body[:maxLen]) + "... (truncated)"
 }

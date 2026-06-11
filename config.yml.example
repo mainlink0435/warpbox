@@ -80,6 +80,47 @@ cache:
   # Optional. Default: 2. Valid range: 0–10.
   cdn_url_repair_retries: 2
 
+  # Base backoff interval in seconds for CDN URL fetch retries.
+  # When TorBox returns a 5xx or 429 error, the fetch is retried with
+  # exponential backoff: backoff * 1s, * 2s, * 4s, etc.
+  # Optional. Default: 1. Valid range: 1–60.
+  cdn_url_retry_backoff: 1
+
+  # Maximum number of CDN URL fetch retry attempts on TorBox API errors.
+  # Each retry makes a rate-limited API call, so keep this low.
+  # Set to 0 to disable retries (not recommended — transient errors
+  # will immediately fail).
+  # For server-side errors like DATABASE_ERROR ("try again later"),
+  # retrying multiple times just burns the rate budget. 1 retry
+  # is usually enough.
+  # Optional. Default: 1. Valid range: 0–10.
+  cdn_url_retry_attempts: 1
+
+  # How long to cache failed CDN URL lookups in seconds (negative cache).
+  # When fetchCDNURL fails for a specific (torrent_id, file_id), subsequent
+  # requests for the same file within this window return the cached error
+  # without making an API call. This prevents Plex's retry loop from
+  # hammering TorBox with the same failing request.
+  # Optional. Default: 30. Valid range: 1–300.
+  negative_cache_ttl_seconds: 30
+
+  # Circuit breaker: maximum number of failed CDN URL fetches per torrent
+  # within the sliding window. Once exceeded, the torrent is marked "stale"
+  # and all CDN URL fetches for all files in that torrent are skipped until
+  # the stale period expires. Reset automatically when stale period ends.
+  # Optional. Default: 5. Valid range: 1–100.
+  circuit_breaker_failures: 5
+
+  # Circuit breaker: sliding window duration in seconds for counting failures.
+  # Optional. Default: 60. Valid range: 1–3600.
+  circuit_breaker_window_seconds: 60
+
+  # Circuit breaker: how many minutes a stale torrent is skipped for.
+  # When a torrent is marked stale, all CDN URL fetches for its files are
+  # skipped until this period expires. At that point the torrent is retried.
+  # Optional. Default: 5. Valid range: 1–60.
+  circuit_breaker_stale_minutes: 5
+
 # ---------------------------------------------------------------------------
 # Rate-Limiting / Throttle
 # ---------------------------------------------------------------------------

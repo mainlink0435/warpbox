@@ -83,4 +83,21 @@
   - `mattn/go-sqlite3` is the de facto standard Go SQLite driver, uses CGO + SQLite amalgamation.
   - Pure-Go alternatives (modernc.org/sqlite) exist but lack WAL mode support guarantees and have different performance characteristics.
   - MinGW-w64 GCC is available on the dev machine (`x86_64-posix-seh-rev0, Built by MinGW-Builds project, 15.2.0`).
-  - **Trade-off:** Cross-compilation for non-Windows targets requires a C cross-compiler or a different driver. For initial development on Windows, this is acceptable.
+- **Trade-off:** Cross-compilation for non-Windows targets requires a C cross-compiler or a different driver. For initial development on Windows, this is acceptable.
+
+## D-008: Exponential backoff + negative cache + circuit breaker for CDN URL fetches
+
+- **Date:** 2026-06-11
+- **Context:** Plex's ~2s retry loop on files with expired TorBox CDN URLs caused a death spiral: 500 errors → more API calls → TorBox abuse protection returns 429 → all calls fail. The throttle was working correctly (250 req/min limit, 240ms spacing) but Plex only produces ~30 req/min. The 429 wasn't a rate limit violation — TorBox was punishing the *pattern* of repeated failed requests on the same torrent IDs.
+- **Decision:** Implement three mitigation layers:
+  1. **Exponential backoff + retry (1s, 2s, 4s)** for 5xx and 429 errors from TorBox API. 429s get a 5s backoff as a safer default. Max 3 retries.
+  2. **Negative cache** (30s TTL) mapping `(torrent_id, file_id)` → error. Subsequent Plex retries for the same file return the cached error without hitting the API.
+  3. **Circuit breaker** per torrent: 5 failures in a 60s sliding window marks the torrent "stale" for 5 minutes. All API calls for files in a stale torrent are skipped until the stale period expires.
+- **Rationale:** 
+  - The negative cache is the most important layer — it breaks Plex's retry loop at the application level without any API calls.
+  - The circuit breaker prevents a single expired torrent from consuming all rate budget. When the metadata sync refreshes torrent data, stale torrents may become valid again.
+  - Retry with backoff handles transient TorBox errors (brief downtime, temporary rate limit) without manual intervention.
+  - All thresholds are hardcoded as constants. Defer config-ifying until real-world data shows what values work.
+  - The TorBox client `do()` method now logs non-200 response bodies at WARN level, truncated to 512 chars, using `url.Redacted()` to protect the API key. This was essential for diagnosing the 500 errors.
+- **Thresholds:** retries=3, backoff=[1s,2s,4s], 429 backoff=5s, negative-cache TTL=30s, circuit-breaker=[5 failures, 60s window, 5min stale]
+- **Issue:** #59

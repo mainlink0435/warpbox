@@ -30,7 +30,21 @@ type CacheConfig struct {
 	EvictionStrategy   string `yaml:"eviction_strategy"`     // "ttl" or "lru"; default: "ttl"
 	CDNURLTTLMinutes   int    `yaml:"cdn_url_ttl_minutes"`   // How long to cache CDN URLs; default: 120
 	CDNURLAutoRepair   *bool  `yaml:"cdn_url_auto_repair"`   // Auto-repair stale CDN URLs; nil→default true
-	CDNURLRepairRetries *int  `yaml:"cdn_url_repair_retries"` // Max repair retries per request; nil→default 2
+	CDNURLRepairRetries *int  `yaml:"cdn_url_repair_retries"` // Max CDN proxy retries per request; nil→default 2
+
+	// CDN URL fetch retry settings (for TorBox API errors, not CDN proxy errors).
+	// These control how getCDNURLWithRetry behaves on 5xx/429 from TorBox.
+	CDNURLRetryBackoff *int `yaml:"cdn_url_retry_backoff"`   // Backoff base in seconds (e.g. 1 → 1s, 2s, 4s); nil→default 1
+	CDNURLRetryCount   *int `yaml:"cdn_url_retry_attempts"`  // Max retry attempts; nil→default 1
+
+	// Negative cache: prevents Plex retry loop from hitting TorBox for recently-failed files.
+	NegativeCacheTTLSeconds *int `yaml:"negative_cache_ttl_seconds"` // How long to cache failed results; nil→default 30
+
+	// Circuit breaker: per-torrent failure tracking. Torrents exceeding the threshold
+	// are marked stale and skipped for all files within until stale period expires.
+	CircuitBreakerFailures  *int `yaml:"circuit_breaker_failures"`   // Max failures in window before stalling; nil→default 5
+	CircuitBreakerWindowSec *int `yaml:"circuit_breaker_window_seconds"` // Sliding window for failure count; nil→default 60
+	CircuitBreakerStaleMin  *int `yaml:"circuit_breaker_stale_minutes"` // Duration a stale torrent is skipped; nil→default 5
 }
 
 // ThrottleConfig holds rate-limiting settings.
@@ -106,6 +120,30 @@ func setDefaults(c *Config) {
 		n := 2
 		c.Cache.CDNURLRepairRetries = &n
 	}
+	if c.Cache.CDNURLRetryBackoff == nil {
+		n := 1
+		c.Cache.CDNURLRetryBackoff = &n
+	}
+	if c.Cache.CDNURLRetryCount == nil {
+		n := 1
+		c.Cache.CDNURLRetryCount = &n
+	}
+	if c.Cache.NegativeCacheTTLSeconds == nil {
+		n := 30
+		c.Cache.NegativeCacheTTLSeconds = &n
+	}
+	if c.Cache.CircuitBreakerFailures == nil {
+		n := 5
+		c.Cache.CircuitBreakerFailures = &n
+	}
+	if c.Cache.CircuitBreakerWindowSec == nil {
+		n := 60
+		c.Cache.CircuitBreakerWindowSec = &n
+	}
+	if c.Cache.CircuitBreakerStaleMin == nil {
+		n := 5
+		c.Cache.CircuitBreakerStaleMin = &n
+	}
 }
 
 // validate checks that required fields are present.
@@ -123,6 +161,42 @@ func validate(c *Config) error {
 		r := *c.Cache.CDNURLRepairRetries
 		if r < 0 || r > 10 {
 			return fmt.Errorf("cache.cdn_url_repair_retries must be 0–10, got %d", r)
+		}
+	}
+	if c.Cache.CDNURLRetryCount != nil {
+		r := *c.Cache.CDNURLRetryCount
+		if r < 0 || r > 10 {
+			return fmt.Errorf("cache.cdn_url_retry_attempts must be 0–10, got %d", r)
+		}
+	}
+	if c.Cache.CDNURLRetryBackoff != nil {
+		r := *c.Cache.CDNURLRetryBackoff
+		if r < 1 || r > 60 {
+			return fmt.Errorf("cache.cdn_url_retry_backoff must be 1–60, got %d", r)
+		}
+	}
+	if c.Cache.NegativeCacheTTLSeconds != nil {
+		r := *c.Cache.NegativeCacheTTLSeconds
+		if r < 1 || r > 300 {
+			return fmt.Errorf("cache.negative_cache_ttl_seconds must be 1–300, got %d", r)
+		}
+	}
+	if c.Cache.CircuitBreakerFailures != nil {
+		r := *c.Cache.CircuitBreakerFailures
+		if r < 1 || r > 100 {
+			return fmt.Errorf("cache.circuit_breaker_failures must be 1–100, got %d", r)
+		}
+	}
+	if c.Cache.CircuitBreakerWindowSec != nil {
+		r := *c.Cache.CircuitBreakerWindowSec
+		if r < 1 || r > 3600 {
+			return fmt.Errorf("cache.circuit_breaker_window_seconds must be 1–3600, got %d", r)
+		}
+	}
+	if c.Cache.CircuitBreakerStaleMin != nil {
+		r := *c.Cache.CircuitBreakerStaleMin
+		if r < 1 || r > 60 {
+			return fmt.Errorf("cache.circuit_breaker_stale_minutes must be 1–60, got %d", r)
 		}
 	}
 	return nil

@@ -60,6 +60,8 @@ type LandingData struct {
 	LogFormat            string
 	LogLevel             string
 	APICallsTotal        int64
+	APISuccessfulCalls   int64
+	APIFailedCalls       int64
 	APICallsLastMinute   int
 	LastSyncTime         string // human-readable time of last successful sync
 	LastSyncError        string // empty if last sync succeeded
@@ -131,6 +133,8 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		LogFormat:           s.cfg.LogFormat,
 		LogLevel:            s.cfg.LogLevel,
 		APICallsTotal:       throttleStats.TotalCalls,
+		APISuccessfulCalls:  throttleStats.SuccessfulCalls,
+		APIFailedCalls:      throttleStats.FailedCalls,
 		APICallsLastMinute:  throttleStats.CallsLastMinute,
 		LastSyncTime:        lastSyncTime,
 		LastSyncError:       lastSyncErr,

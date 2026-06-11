@@ -26,11 +26,16 @@ type Queue struct {
 	lastCall   time.Time
 	totalCalls int64
 	callWindow []time.Time
+
+	successfulCalls int64
+	failedCalls     int64
 }
 
 // Stats returns throttle statistics for the landing page.
 type Stats struct {
 	TotalCalls       int64
+	SuccessfulCalls  int64
+	FailedCalls      int64
 	CallsLastMinute  int
 	RequestsPerMinute int
 }
@@ -62,6 +67,8 @@ func (q *Queue) Stats() Stats {
 
 	return Stats{
 		TotalCalls:        q.totalCalls,
+		SuccessfulCalls:   q.successfulCalls,
+		FailedCalls:       q.failedCalls,
 		CallsLastMinute:   recent,
 		RequestsPerMinute: int(time.Minute / q.rate),
 	}
@@ -99,13 +106,19 @@ func (q *Queue) processLoop(ctx context.Context) {
 			q.mu.Unlock()
 		}
 
-		if err := r.Execute(ctx); err != nil {
-			slog.Error("throttle request failed", "label", r.Label, "error", err)
-		}
+		err := r.Execute(ctx)
 
 		q.mu.Lock()
 		q.lastCall = time.Now()
 		q.totalCalls++
+		if err != nil {
+			q.failedCalls++
+			// Log throttle-level failure at DEBUG only. The caller (e.g. handleGet)
+			// owns the ERROR-level log with full context (torrent_id, file_id, etc.).
+			slog.Debug("throttle request failed", "label", r.Label, "error", err)
+		} else {
+			q.successfulCalls++
+		}
 		q.callWindow = append(q.callWindow, q.lastCall)
 		// Keep the window trimmed to roughly the last 60 seconds.
 		cutoff := q.lastCall.Add(-60 * time.Second)

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ben/warpbox/internal/cache"
@@ -20,6 +21,21 @@ import (
 
 // SyncStatusFunc is a callback that returns the current sync status.
 type SyncStatusFunc func() metadata.SyncStatus
+
+// negativeCacheEntry tracks a failed CDN URL fetch so we don't hammer TorBox
+// on rapid retries from Plex/jellyfin. Entries expire after their TTL.
+type negativeCacheEntry struct {
+	err       error
+	expiresAt time.Time
+}
+
+// torrentFailureTracker counts failures for a single torrent within a sliding
+// window. Once the threshold is exceeded, the torrent is marked "stale" and
+// all CDN URL fetches are skipped until the next metadata sync.
+type torrentFailureTracker struct {
+	failures   []time.Time
+	staleUntil time.Time
+}
 
 // Server is the Warpbox WebDAV server.
 type Server struct {
@@ -32,6 +48,16 @@ type Server struct {
 	mux        *http.ServeMux
 	startTime  time.Time
 	syncStatus SyncStatusFunc
+
+	// Negative cache: key = "torrentID:fileID", value = error + expiry.
+	// Protects against Plex's tight retry loop burning API quota on known-bad files.
+	negativeCache   map[string]*negativeCacheEntry
+	negativeCacheMu sync.Mutex
+
+	// Circuit breaker: per-torrent failure tracking.
+	// Marked stale after maxTorrentFailures in the sliding window.
+	torrentFailures   map[int64]*torrentFailureTracker
+	torrentFailuresMu sync.Mutex
 }
 
 // Config holds the server-specific configuration.
@@ -50,6 +76,18 @@ type Config struct {
 	LogFormat          string // For landing page display
 	LogLevel           string // For landing page display
 	SyncIntervalMinute int    // For landing page display
+
+	// CDN URL fetch retry settings.
+	CDNURLRetryBackoff int // Backoff base in seconds; default 1
+	CDNURLRetryCount   int // Max retry attempts; default 3
+
+	// Negative cache TTL in seconds.
+	NegativeCacheTTLSeconds int // default 30
+
+	// Circuit breaker settings.
+	CircuitBreakerFailures  int // Max failures in window; default 5
+	CircuitBreakerWindowSec int // Sliding window seconds; default 60
+	CircuitBreakerStaleMin  int // Stale duration minutes; default 5
 }
 
 // New creates a new WebDAV server.
@@ -63,6 +101,9 @@ func New(cfg Config, store *metadata.Store, cache *cache.Buffer, torBox *torbox.
 		root:      cfg.WebDAVRoot,
 		mux:       http.NewServeMux(),
 		startTime: time.Now(),
+
+		negativeCache:   make(map[string]*negativeCacheEntry),
+		torrentFailures: make(map[int64]*torrentFailureTracker),
 	}
 	s.registerRoutes()
 	return s
