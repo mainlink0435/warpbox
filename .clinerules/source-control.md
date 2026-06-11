@@ -15,6 +15,6 @@
    📥 Backlog → 🧠 Research/Spikes → 📋 Ready to Dev → 🚧 In Progress → 👀 Review/QA → ✅ Done
 
    - Gitea does **not** support auto-closing via commit message keywords. After pushing a commit that resolves an issue, you MUST:
-     1. Move the issue to ✅ Done on the Kanban board (via the Gitea web UI).
-     2. Use the `gitea-mcp` `issue_write` tool (method: `update`, state: `closed`) to close it.
+     1. Move the issue to ✅ Done on the Kanban board (see system-patterns.md §8 for board operations).
+     2. Use the `gitea-unified` `issue_write` tool (method: `update`, state: `closed`) to close it.
    - Include the issue number in the commit message for documentation purposes (e.g., `fix: handle CDN expiry, refs #28`), but do not rely on keywords to close it.

@@ -50,8 +50,9 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
   The issue stays open until the fix is verified in deployment.
 * Before starting any non-trivial work, consult the issue tracker — not the
   chat history — for context and priorities.
-* When an issue is completed, move it to ✅ Done on the board, then close it
-  manually via `issue_write` (method: `update`, state: `closed`).
+* When an issue is completed, close it via `issue_write` (method: `update`,
+  state: `closed`), then move it to ✅ Done on the board (see §8 for board
+  operations).
 
 ## 8. Project Board Operations (Kanban)
 
