@@ -95,6 +95,17 @@
     background: #334155;
     border-color: #38bdf8;
   }
+  .btn-active {
+    background: #0f172a;
+    border-color: #38bdf8;
+    color: #38bdf8;
+    cursor: default;
+    opacity: 0.7;
+  }
+  .btn-active:hover {
+    background: #0f172a;
+    border-color: #38bdf8;
+  }
   .chart-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -456,6 +467,26 @@
   loadStats();
   setInterval(loadStats, 60000);
 
+  // Highlight the currently active log level button
+  function updateActiveLogLevel(currentLevel) {
+    var buttons = document.querySelectorAll('form[action="/actions/loglevel"] input[type="submit"]');
+    buttons.forEach(function(btn) {
+      var form = btn.closest('form');
+      var level = form ? form.querySelector('input[name="level"]').value : '';
+      if (level === currentLevel) {
+        btn.classList.add('btn-active');
+      } else {
+        btn.classList.remove('btn-active');
+      }
+    });
+  }
+
+  // Set initial active state
+  var initialLevel = document.getElementById('log-level-value');
+  if (initialLevel) {
+    updateActiveLogLevel(initialLevel.textContent.trim());
+  }
+
   // Toast notifications for all action forms
   function showToast(message, type) {
     const container = document.getElementById('toast-container');
@@ -475,16 +506,26 @@
       e.preventDefault();
       var body = new URLSearchParams(new FormData(form));
       var action = form.getAttribute('action');
+
+      // Don't POST if clicking the already-active log level button
+      if (action === '/actions/loglevel') {
+        var levelCell = document.getElementById('log-level-value');
+        if (levelCell && body.get('level') === levelCell.textContent.trim()) {
+          return;
+        }
+      }
+
       fetch(action, { method: 'POST', body: body })
         .then(function(resp) {
           return resp.text().then(function(text) {
             if (resp.ok) {
               showToast(text.trim(), 'success');
-              // If this was a log level change, update the displayed level
+              // If this was a log level change, update the displayed level and button state
               if (action === '/actions/loglevel') {
                 var levelCell = document.getElementById('log-level-value');
                 if (levelCell) {
                   levelCell.textContent = body.get('level');
+                  updateActiveLogLevel(body.get('level'));
                 }
               }
             } else {
