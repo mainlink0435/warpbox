@@ -32,7 +32,7 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 
 ## 6. Decision Tracking
 
-* Always consult the [Decision-Log wiki page](http://REDACTED/ben/warpbox/wiki/Decision-Log) before implementing complex logic to avoid repeating failed experiments. Whenever a significant architectural decision is made, a workaround is implemented, or an approach fails, you must immediately document the context, decision, and rationale on the wiki page.
+* Always consult the [Decision Log](docs/decision-log.md) before implementing complex logic to avoid repeating failed experiments. Whenever a significant architectural decision is made, a workaround is implemented, or an approach fails, you must immediately document the context, decision, and rationale in the decision log.
 
 ## 7. Feature & Issue Tracking
 
@@ -66,19 +66,19 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 * Board operations are synchronous and return JSON results directly — the AI
   assistant can call `board_columns(list, ...)` and inspect the parsed columns
   list immediately.
-* See D-014 in the [Decision-Log wiki page](http://REDACTED/ben/warpbox/wiki/Decision-Log) for the full route map (reverse-engineered from
+* See D-014 in the [Decision Log](docs/decision-log.md) for the full route map (reverse-engineered from
   Gitea 1.25.5 `routers/web/web.go`).
 * Issue tracking relies solely on labels (`status:*` or type labels), milestone
   assignment, and the Gitea Issue tracker.
 
-## 9. Wiki Usage
+## 9. Documentation Structure
 
 * Living specifications, testing strategies, architecture decision records
-  (beyond the decision log), and onboarding guides belong in the Gitea Wiki.
+  (beyond the decision log), and onboarding guides belong in the `docs/` folder.
 * Issues are for actionable, completable units of work. If content will be
-  continually updated over time (e.g., a test plan), it belongs in the Wiki.
-* When an issue's scope expands into a living document, create a Wiki page
-  and link it from the issue.
+  continually updated over time (e.g., a test plan), it belongs in `docs/`.
+* When an issue's scope expands into a living document, create a Markdown file
+  under `docs/` and link it from the issue.
 
 ## 10. Kanban Board — Done Column Is Authoritative
 
