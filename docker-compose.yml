@@ -1,23 +1,26 @@
 services:
   warpbox:
-    image: REDACTED/ben/warpbox:0.0.1-amd64
+    image: REDACTED/ben/warpbox:0.2.2
     container_name: warpbox
     ports:
       - "1412:1412"
     volumes:
-      - ./data:/data
+      - ./config.yml:/data/config.yml:ro
     restart: unless-stopped
 
   rclone:
     image: rclone/rclone:latest
-    container_name: rclone
+    container_name: warpbox-rclone
     restart: unless-stopped
     environment:
+      - PUID=1000
+      - PGID=1000
       - RCLONE_CONFIG_WARPBOX_TYPE=webdav
       - RCLONE_CONFIG_WARPBOX_URL=http://warpbox:1412/webdav/
       - RCLONE_CONFIG_WARPBOX_VENDOR=other
     volumes:
       - /mnt/warpbox:/data:rshared
+      - rclone_cache:/cache
     cap_add:
       - SYS_ADMIN
     security_opt:
@@ -26,4 +29,34 @@ services:
       - /dev/fuse:/dev/fuse:rwm
     depends_on:
       - warpbox
-    command: "mount warpbox: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full"
+    command: >
+      mount warpbox: /data
+      --uid ${PUID}
+      --gid ${PGID}
+      --cache-dir /cache
+      --vfs-cache-mode full
+      --vfs-cache-max-age 24h
+      --vfs-cache-max-size 100G
+      --vfs-cache-min-free-space 20G
+      --vfs-read-chunk-size 32M
+      --vfs-read-chunk-size-limit 256M
+      --vfs-read-ahead 256M
+      --buffer-size 128M
+      --transfers 2
+      --checkers 8
+      --timeout 300s
+      --contimeout 30s
+      --low-level-retries 3
+      --dir-cache-time 10m
+      --attr-timeout 24h
+      --poll-interval 5m
+      --no-checksum
+      --no-modtime
+      --allow-other
+      --allow-non-empty
+      --vfs-fast-fingerprint
+      --ignore-case
+      --log-level NOTICE
+
+volumes:
+  rclone_cache:
