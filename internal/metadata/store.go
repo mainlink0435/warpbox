@@ -123,7 +123,6 @@ func (s *Store) migrate() error {
 // The SyncTag field is used to tag records with the current sync batch
 // so that PruneBySyncTag can delete records not touched by the latest sync.
 func (s *Store) UpsertFile(f FileRecord) error {
-	start := time.Now()
 	_, err := s.db.Exec(`
 		INSERT INTO files (item_id, file_id, source, name, path, size, mime_type, created_at, cdn_url, cdn_url_expires, sync_tag, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -143,7 +142,6 @@ func (s *Store) UpsertFile(f FileRecord) error {
 	if isLockedError(err) {
 		s.dbLockErrors.Add(1)
 	}
-	slog.Debug("db write duration", "method", "UpsertFile", "duration_ms", time.Since(start).Milliseconds(), "error", err)
 	return err
 }
 
