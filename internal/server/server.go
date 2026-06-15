@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/ben/warpbox/internal/metadata"
 	"github.com/ben/warpbox/internal/throttle"
 	"github.com/ben/warpbox/internal/torbox"
@@ -46,7 +48,7 @@ type Server struct {
 	torBox     *torbox.Client
 	queue      *throttle.Queue
 	root       string
-	mux        *http.ServeMux
+	mux        *chi.Mux
 	startTime  time.Time
 	syncStatus SyncStatusFunc
 
@@ -136,11 +138,6 @@ type Config struct {
 	// slog.HandlerOptions.Level so a Set() call takes effect immediately.
 	// Must be set by main.go after New() returns.
 	LevelVar *slog.LevelVar
-
-	// Auth settings for optional HTTP Basic Authentication on web UI.
-	AuthEnabled  bool
-	AuthUsername string
-	AuthPassword string
 }
 
 // New creates a new WebDAV server.
@@ -156,7 +153,7 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 		torBox:    torBox,
 		queue:     queue,
 		root:      cfg.WebDAVRoot,
-		mux:       http.NewServeMux(),
+		mux:       chi.NewRouter(),
 		startTime: time.Now(),
 
 		negativeCache:          make(map[string]*negativeCacheEntry),
@@ -389,7 +386,7 @@ func (s *Server) CircuitBreakerSize() int {
 	return len(s.torrentFailures)
 }
 
-// versionHeader returns an HTTP middleware that sets the Server header.
+// versionHeader is HTTP middleware that sets the Server header.
 func (s *Server) versionHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", "warpbox/"+s.cfg.Version)
@@ -397,64 +394,74 @@ func (s *Server) versionHeader(next http.Handler) http.Handler {
 	})
 }
 
-// registerRoutes sets up the HTTP handlers for WebDAV methods,
-// the HTML browser, branded landing page, and embedded favicon/logo.
-//
-// Routes marked with s.requireAuth are protected by optional HTTP Basic
-// Authentication. WebDAV and Infuse routes are deliberately excluded
-// because they are consumed by rclone/Plex, not a browser.
-func (s *Server) registerRoutes() {
-	handler := s.versionHeader(http.HandlerFunc(s.handleWebDAV))
-	s.mux.Handle(s.root+"/", handler)
-	s.mux.Handle(s.root, handler)
-
-	s.mux.Handle("/http/", s.versionHeader(s.requireAuth(s.handleHTTP)))
-	s.mux.Handle("/http", s.versionHeader(s.requireAuth(s.handleHTTP)))
-
-	s.mux.Handle("/infuse/", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
-	s.mux.Handle("/infuse", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
-
-	s.mux.Handle("/logs/", s.versionHeader(s.requireAuth(s.handleLogs)))
-	s.mux.Handle("/logs", s.versionHeader(s.requireAuth(s.handleLogs)))
-
-	s.mux.Handle("/actions/", s.versionHeader(s.requireAuth(s.handleActions)))
-
-	// pprof endpoints for runtime profiling (heap, goroutine, CPU, etc.).
-	// Only registered when enable_pprof is true in config.
-	if s.cfg.EnablePprof {
-		s.mux.Handle("/debug/pprof/", s.versionHeader(s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-			http.DefaultServeMux.ServeHTTP(w, r)
-		})))
-		s.mux.Handle("/debug/pprof", s.versionHeader(s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-			http.DefaultServeMux.ServeHTTP(w, r)
-		})))
-	}
-
-	s.mux.Handle("/healthz", s.versionHeader(http.HandlerFunc(s.handleHealthz)))
-	s.mux.Handle("/stats.json", s.versionHeader(s.requireAuth(s.handleStatsJSON)))
-	s.mux.Handle("/", s.versionHeader(s.requireAuth(s.handleLanding)))
-	s.mux.HandleFunc("/warpbox.svg", s.handleLogo)
-	s.mux.HandleFunc("/favicon.ico", s.handleLogo)
-}
-
-// handleWebDAV dispatches WebDAV methods to the appropriate handler.
+// handleWebDAV dispatches WebDAV methods for both WebDAV and Infuse paths.
+// Chi's Handle is used (not per-method routing) because PROPFIND is not
+// a standard HTTP method. Internal dispatch handles GET, HEAD, OPTIONS,
+// and PROPFIND explicitly.
 func (s *Server) handleWebDAV(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/infuse") {
 		r.URL.Path = strings.Replace(r.URL.Path, "/infuse", s.root, 1)
 	}
-
 	switch r.Method {
-	case http.MethodOptions:
-		s.handleOptions(w, r)
 	case http.MethodGet:
 		s.handleGet(w, r)
 	case http.MethodHead:
 		s.handleHead(w, r)
+	case http.MethodOptions:
+		s.handleOptions(w, r)
 	case "PROPFIND":
 		s.handlePropfind(w, r)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// registerRoutes sets up the chi router with all HTTP routes.
+func (s *Server) registerRoutes() {
+	s.mux.Use(s.versionHeader)
+
+	// Register PROPFIND as a supported HTTP method so chi routes it
+	// instead of rejecting it at the routing level.
+	chi.RegisterMethod("PROPFIND")
+
+	// WebDAV routes — internal dispatch handles GET, HEAD, OPTIONS, PROPFIND.
+	// Chi's Handle is used (not per-method) because PROPFIND is non-standard.
+	s.mux.Handle(s.root+"/*", http.HandlerFunc(s.handleWebDAV))
+	s.mux.Handle(s.root, http.HandlerFunc(s.handleWebDAV))
+	s.mux.Handle("/infuse/*", http.HandlerFunc(s.handleWebDAV))
+	s.mux.Handle("/infuse", http.HandlerFunc(s.handleWebDAV))
+
+	// HTTP browser (directory listing + file streaming with CDN proxy).
+	s.mux.Get("/http/*", s.handleHTTP)
+	s.mux.Get("/http", s.handleHTTP)
+
+	// Logs endpoint.
+	s.mux.Get("/logs", s.handleLogs)
+	s.mux.Get("/logs/", s.handleLogs)
+
+	// Actions — POST-only sub-routes.
+	s.mux.Route("/actions", func(r chi.Router) {
+		r.Post("/resync", s.handleResync)
+		r.Post("/restart-sync", s.handleRestartSync)
+		r.Post("/loglevel", s.handleLogLevel)
+	})
+
+	// pprof endpoints (conditional).
+	if s.cfg.EnablePprof {
+		s.mux.HandleFunc("/debug/pprof", http.DefaultServeMux.ServeHTTP)
+		s.mux.HandleFunc("/debug/pprof/*", http.DefaultServeMux.ServeHTTP)
+	}
+
+	// Health / stats.
+	s.mux.Get("/healthz", s.handleHealthz)
+	s.mux.Get("/stats.json", s.handleStatsJSON)
+
+	// Landing page (exact match only).
+	s.mux.Get("/", s.handleLanding)
+
+	// Static assets.
+	s.mux.Get("/warpbox.svg", s.handleLogo)
+	s.mux.Get("/favicon.ico", s.handleLogo)
 }
 
 // SetSyncStatus configures the callback for reading sync worker status.

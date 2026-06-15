@@ -23,25 +23,6 @@ func SetActions(funcs map[string]ActionFunc) {
 	}
 }
 
-// handleActions dispatches POST requests to the appropriate action handler.
-func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	switch r.URL.Path {
-	case "/actions/resync":
-		s.handleResync(w, r)
-	case "/actions/restart-sync":
-		s.handleRestartSync(w, r)
-	case "/actions/loglevel":
-		s.handleLogLevel(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
 // handleResync triggers an immediate metadata sync from TorBox.
 func (s *Server) handleResync(w http.ResponseWriter, r *http.Request) {
 	fn, ok := actions["resync"]

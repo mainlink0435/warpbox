@@ -108,11 +108,6 @@ type LandingData struct {
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
 func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
 	// Gather runtime data.
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
