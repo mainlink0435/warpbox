@@ -67,11 +67,11 @@ This page documents all significant architectural and technical decisions made d
 - **Date:** 2026-06-11
 - **Context:** Plex's ~2s retry loop on files with expired TorBox CDN URLs caused a death spiral: 500 errors → more API calls → TorBox abuse protection returns 429 → all calls fail.
 - **Decision:** Implement three mitigation layers:
-  1. **Exponential backoff + retry (1s, 2s, 4s)** for 5xx and 429 errors. 429s get a 5s backoff. Max 3 retries.
+  1. **Exponential backoff + retry (1s, 2s, 4s)** for 5xx and 429 errors. 429s get a 30s backoff. Max 1 retry.
   2. **Negative cache** (30s TTL) mapping `(torrent_id, file_id)` → error. Subsequent Plex retries return the cached error without hitting the API.
   3. **Circuit breaker** per torrent: 5 failures in a 60s sliding window marks the torrent "stale" for 5 minutes.
 - **Rationale:** The negative cache breaks Plex's retry loop at the application level. The circuit breaker prevents a single expired torrent from consuming all rate budget.
-- **Thresholds:** retries=3, backoff=[1s,2s,4s], 429 backoff=5s, negative-cache TTL=30s, circuit-breaker=[5 failures, 60s window, 5min stale]
+- **Thresholds:** retries=1, backoff=[1s], 429 backoff=30s, negative-cache TTL=30s, circuit-breaker=[5 failures, 60s window, 5min stale]
 - **Issue:** #59
 
 ## D-013: "Slow disk" hang instead of error when CDN is unavailable

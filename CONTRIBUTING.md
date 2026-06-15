@@ -41,7 +41,7 @@ When filing a bug, include:
 
 - Follow standard Go conventions (`gofmt`, `go vet`).
 - Use [conventional commits](https://www.conventionalcommits.org/) for commit messages (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).
-- Include `closes #N` in commit messages to auto-close issues.
+- Include `refs #N` in commit messages to reference issues (Gitea does not support auto-close keywords).
 - Run `go vet ./...` before committing.
 
 ## Pull Request Process
