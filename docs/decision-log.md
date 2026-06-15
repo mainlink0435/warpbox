@@ -202,3 +202,15 @@ This page documents all significant architectural and technical decisions made d
 - **Additional finding:** Step 1 (`POST /issues/projects?issue_ids=N`) returns `{"ok": true}` even when the assignment fails silently. This is a Gitea 1.25.5 endpoint quirk — `ctx.FormString("issue_ids")` in `getActionIssues()` appears to not parse the query string correctly when POST body data is also present. The `board_issues` tool attempts this assignment but does not treat a missing project assignment as fatal — it proceeds to the move step regardless. New issues that aren't already on the board must be added manually via the browser UI.
 - **Also fixed:** `_login()` now detects failed logins by checking for the login form in the POST response. `_refresh_csrf()` now verifies it received the actual board page (not a redirect to login).
 - **Issue:** #96
+
+## D-020: Standardise documentation file naming conventions
+
+- **Date:** 2026-06-15
+- **Context:** Documentation files used non-standard names (`system-patterns.md`, `tech-context.md`, `testing-suite.md`). Adding a new `tech-spec.md` raised the question of whether to keep the existing naming pattern or align with industry conventions.
+- **Decision:** Renamed to standard conventions:
+  - `system-patterns.md` → `ARCHITECTURE.md`
+  - `tech-context.md` → `DEVELOPMENT.md`
+  - `testing-suite.md` → `TESTING.md`
+- **Rationale:** Standard names are more discoverable and follow common open-source conventions. The `decision-log.md` and `auth-matrix.md` names are specific to this project's needs and have no common conventional alternative.
+- **Also:** Created `docs/tech-spec.md` skeleton as a technical specification that must match the code exactly. The audit prompt in `audit script` was updated to cross-reference technical docs against source code, and a new "Project Conventions & Structure" area was added to audit future naming consistency.
+- **Issue:** #96
