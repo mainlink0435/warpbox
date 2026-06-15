@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Replace path-based prune with sync_tag batch approach
 - Landing page centering and PROPFIND directory timestamps
-- Cross-reference board operations in source-control.md and system-patterns.md
+- Cross-reference board operations in source-control.md and ARCHITECTURE.md
 - Use docker exec to hot-swap binary, works with existing image lacking entrypoint
 - Use single quotes for sh -c to prevent apk help error
 - Remove --no-cache flag for apk v3 compatibility on golang:1.26-alpine
