@@ -9,7 +9,7 @@
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 COPY warpbox.bin /usr/local/bin/warpbox
 RUN chmod 755 /usr/local/bin/warpbox

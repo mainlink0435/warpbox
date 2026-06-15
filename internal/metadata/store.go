@@ -5,6 +5,7 @@
 package metadata
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -34,6 +35,11 @@ type Store struct {
 // DBLockErrors returns the total number of database lock errors encountered.
 func (s *Store) DBLockErrors() int64 {
 	return s.dbLockErrors.Load()
+}
+
+// Ping checks whether the underlying SQLite database is reachable.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 // FileRecord represents a cached file entry from the TorBox directory.

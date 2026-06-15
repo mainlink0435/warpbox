@@ -421,6 +421,7 @@ func (s *Server) registerRoutes() {
 		})))
 	}
 
+	s.mux.Handle("/healthz", s.versionHeader(http.HandlerFunc(s.handleHealthz)))
 	s.mux.Handle("/stats.json", s.versionHeader(http.HandlerFunc(s.handleStatsJSON)))
 	s.mux.Handle("/", s.versionHeader(http.HandlerFunc(s.handleLanding)))
 	s.mux.HandleFunc("/warpbox.svg", s.handleLogo)
@@ -504,3 +505,4 @@ func (s *Server) Start(ctx context.Context) error {
 	slog.Info("webdav server listening", "addr", s.cfg.ListenAddr)
 	return http.ListenAndServe(s.cfg.ListenAddr, s.mux)
 }
+

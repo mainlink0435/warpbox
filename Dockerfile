@@ -19,7 +19,7 @@ RUN VERSION=$(git describe --tags --always 2>/dev/null || echo dev) && \
 # Stage 2: Minimal runtime image.
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 COPY --from=build /warpbox /usr/local/bin/warpbox
 
