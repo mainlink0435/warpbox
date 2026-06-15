@@ -1,8 +1,10 @@
-![Warpbox](warpbox.png)
+<div align="center">
+  <img src="warpbox.svg" width="100" alt="Warpbox" />
+  <h1>Warpbox</h1>
+  <p>A high-performance WebDAV proxy for TorBox</p>
+</div>
 
-# Warpbox
-
-Warpbox is a high-performance, lightweight WebDAV proxy written in Go, designed to be consumed by rclone's WebDAV backend. It mounts a cloud-hosted torrent cache (TorBox) as a native, stable local filesystem via rclone's FUSE layer. Its primary function is to act as a defensive interceptor, protecting strict upstream API limits from the aggressive scanning behaviours of media servers like Plex and Jellyfin.
+Warpbox is a lightweight WebDAV proxy written in Go, designed to be consumed by rclone's WebDAV backend. It mounts a cloud-hosted torrent cache (TorBox) as a native, stable local filesystem via rclone's FUSE layer. Its primary function is to act as a defensive interceptor, protecting strict upstream API limits from the aggressive scanning behaviours of media servers like Plex and Jellyfin.
 
 ```
 Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
@@ -235,7 +237,7 @@ You are responsible for ensuring your use of warpbox complies with TorBox's curr
 2. The CI pipeline (`.gitea/workflows/build.yml`) automatically builds binaries for all platforms (Linux amd64/arm64, Windows amd64) and pushes Docker images to the Gitea container registry.
 3. Update `docker-compose.yml` to point to the new version tag.
 
-See `.clinerules/source-control.md` for versioning conventions.
+See `AI instructions` for versioning conventions.
 
 ## AI Usage
 

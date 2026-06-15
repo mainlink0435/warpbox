@@ -65,7 +65,7 @@ This page documents all significant architectural and technical decisions made d
 ## D-006: Use Gitea Issues instead of active-context.md for work tracking
 
 - **Date:** 2026-06-10
-- **Context:** The project's `.clinerules/active-context.md` was being manually updated to track progress but quickly became stale.
+- **Context:** The project's `active-context.md` was being manually updated to track progress but quickly became stale.
 - **Decision:** Delete `active-context.md` and rely entirely on Gitea Issues for feature/bug/priority tracking.
 - **Rationale:**
   - Gitea Issues provide structured labels, priorities, milestones, and comments.
@@ -79,7 +79,7 @@ This page documents all significant architectural and technical decisions made d
 - **Context:** The repo had 11 open issues with no project board and no structured workflow. The Testing Suite issue was too large for a single issue.
 - **Decision:** Created the "Warpbox Kanban" project board with 6 columns and a WIP limit of 2. Moved the Testing Suite strategy to the Gitea Wiki as a living page.
 - **Rationale:** A solo developer Kanban board gives visual priority ordering without requiring milestones. The Wiki is the right place for a testing strategy that evolves over time.
-- **Outcome:** Codified in the `.clinerules/` rules files. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
+- **Outcome:** Codified in `AI instructions`. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
 
 ## D-008: Exponential backoff + negative cache + circuit breaker for CDN URL fetches
 
