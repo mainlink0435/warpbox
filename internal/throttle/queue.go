@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const queueBufferSize = 1024
+
 // Request represents a queued API call.
 type Request struct {
 	Label    string
@@ -20,8 +22,7 @@ type Request struct {
 // Queue is a rate-limited, blocking queue for TorBox API requests.
 type Queue struct {
 	mu         sync.Mutex
-	cond       *sync.Cond
-	queue      []Request
+	items      chan Request
 	rate       time.Duration
 	lastCall   time.Time
 	totalCalls int64
@@ -45,11 +46,10 @@ type Stats struct {
 // NewQueue creates a new throttle queue.
 // requestsPerMinute sets the maximum sustained call rate.
 func NewQueue(requestsPerMinute int) *Queue {
-	q := &Queue{
-		rate: time.Minute / time.Duration(requestsPerMinute),
+	return &Queue{
+		rate:  time.Minute / time.Duration(requestsPerMinute),
+		items: make(chan Request, queueBufferSize),
 	}
-	q.cond = sync.NewCond(&q.mu)
-	return q
 }
 
 // Stats returns current throttle statistics.
@@ -78,57 +78,51 @@ func (q *Queue) Stats() Stats {
 }
 
 // Enqueue adds a request to the blocking queue.
+// If the queue buffer is full, Enqueue blocks until space is available.
 func (q *Queue) Enqueue(r Request) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.queue = append(q.queue, r)
-	q.cond.Signal()
+	q.items <- r
 }
 
-// processLoop runs in a goroutine, dequeuing and executing requests at the
-// configured rate. It blocks when the queue is empty.
+// processLoop runs in a goroutine, receiving and executing requests at the
+// configured rate. It blocks on the channel when the queue is empty and
+// exits cleanly when the context is cancelled.
 func (q *Queue) processLoop(ctx context.Context) {
 	for {
-		q.mu.Lock()
-		for len(q.queue) == 0 {
-			q.cond.Wait()
-		}
-		r := q.queue[0]
-		q.queue = q.queue[1:]
-
-		// Enforce minimum spacing between calls.
-		elapsed := time.Since(q.lastCall)
-		if elapsed < q.rate {
-			q.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(q.rate - elapsed):
+		select {
+		case <-ctx.Done():
+			return
+		case r := <-q.items:
+			// Enforce minimum spacing between calls.
+			elapsed := time.Since(q.lastCall)
+			if elapsed < q.rate {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(q.rate - elapsed):
+				}
 			}
-		} else {
+
+			err := r.Execute(ctx)
+
+			q.mu.Lock()
+			q.lastCall = time.Now()
+			q.totalCalls++
+			if err != nil {
+				q.failedCalls++
+				// Log throttle-level failure at DEBUG only. The caller (e.g. handleGet)
+				// owns the ERROR-level log with full context (torrent_id, file_id, etc.).
+				slog.Debug("throttle request failed", "label", r.Label, "error", err)
+			} else {
+				q.successfulCalls++
+			}
+			q.callWindow = append(q.callWindow, q.lastCall)
+			// Keep the window trimmed to roughly the last 60 seconds.
+			cutoff := q.lastCall.Add(-60 * time.Second)
+			for len(q.callWindow) > 0 && q.callWindow[0].Before(cutoff) {
+				q.callWindow = q.callWindow[1:]
+			}
 			q.mu.Unlock()
 		}
-
-		err := r.Execute(ctx)
-
-		q.mu.Lock()
-		q.lastCall = time.Now()
-		q.totalCalls++
-		if err != nil {
-			q.failedCalls++
-			// Log throttle-level failure at DEBUG only. The caller (e.g. handleGet)
-			// owns the ERROR-level log with full context (torrent_id, file_id, etc.).
-			slog.Debug("throttle request failed", "label", r.Label, "error", err)
-		} else {
-			q.successfulCalls++
-		}
-		q.callWindow = append(q.callWindow, q.lastCall)
-		// Keep the window trimmed to roughly the last 60 seconds.
-		cutoff := q.lastCall.Add(-60 * time.Second)
-		for len(q.callWindow) > 0 && q.callWindow[0].Before(cutoff) {
-			q.callWindow = q.callWindow[1:]
-		}
-		q.mu.Unlock()
 	}
 }
 

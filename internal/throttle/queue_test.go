@@ -214,3 +214,40 @@ func TestRateLimiting(t *testing.T) {
 		t.Errorf("expected 5, got %d (elapsed: %v)", n, elapsed)
 	}
 }
+
+func TestProcessLoopExitsOnContextCancel(t *testing.T) {
+	q := NewQueue(100)
+	ctx, cancel := context.WithCancel(context.Background())
+	q.Start(ctx)
+
+	// Cancel before any items are enqueued.
+	cancel()
+	// Give processLoop time to notice ctx.Done() and exit.
+	time.Sleep(50 * time.Millisecond)
+
+	// Fill the channel buffer. With processLoop exited, items won't be
+	// consumed, so the buffer should fill up.
+	for i := 0; i < queueBufferSize; i++ {
+		q.Enqueue(Request{
+			Label: "post-cancel",
+			Execute: func(ctx context.Context) error { return nil },
+		})
+	}
+
+	// The buffer is now full. The next Enqueue would block forever
+	// if processLoop truly exited. Use a goroutine with a short timeout.
+	done := make(chan struct{})
+	go func() {
+		q.Enqueue(Request{
+			Label: "should-block",
+			Execute: func(ctx context.Context) error { return nil },
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("processLoop still consuming items after context cancel — goroutine leak")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
