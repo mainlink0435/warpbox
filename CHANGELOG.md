@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-06-16
+
+### Added
+- Graceful HTTP server shutdown with 30s timeout, refs #162
+
+### Changed
+- Wire stats.interval_seconds, log dropped errors, update stale docs, refs #163 #166 #168
+- Address audit findings and expand test coverage, refs #153 #156 #158 #157
+- Docker tag to :latest and add source-build section, refs #152
+- Humanise README and contributing guide, refs #84 #106
+
+### Fixed
+- Log discarded time.Parse errors in stats queries, refs #160
+- Pass caller context in ringBufferHandler instead of context.Background(), refs #159
+- Change prune gate to check API success not count>0, refs #155
+- Log discarded ListItemDirs errors in sync change detection, refs #160
+- Remove invalid directory_regex and duplicate entries in config.yml.example, refs #162
+- Correct ListenAddr default comment from :8080 to :1412, refs #152 #154
+
 ## [v0.5.0] - 2026-06-16
 
 ### Added
@@ -42,4 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.5.0...HEAD
+[Unreleased]: /compare/v0.5.1...HEAD
+
+[v0.5.1]: /compare/v0.5.0...v0.5.1
+

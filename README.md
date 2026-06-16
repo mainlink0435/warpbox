@@ -17,12 +17,12 @@ This tool has been developed with heavy AI assistance. If that bothers you, fair
 ```yaml
 services:
   warpbox:
-    image: ghcr.io/mainLink0435/warpbox:latest
+    image: ghcr.io/mainlink0435/warpbox:latest
     container_name: warpbox
     ports:
       - "1412:1412"
     volumes:
-      - ./config.yml:/data/config.yml:ro
+      - ./config.yml:/data/config.yml
     restart: unless-stopped
 
   rclone:
@@ -77,6 +77,15 @@ services:
 
 volumes:
   rclone_cache:
+```
+
+### First run
+
+Warpbox auto-generates `config.yml` from the template on first start. Change
+`api_key: "changeme"` to your TorBox API key, then restart:
+
+```
+docker compose restart warpbox
 ```
 
 ### Bare mount (without Docker)

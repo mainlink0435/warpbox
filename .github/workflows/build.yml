@@ -151,17 +151,15 @@ jobs:
       - name: Extract changelog entry
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          sed -n "/^## \[${TAG}\]/,/^## \[/p" CHANGELOG.md | sed '$d' > release_body.md
+          sed -n "/^## \[${TAG}\]/,\$p" CHANGELOG.md | sed -n '2,$p' | sed '/^## \[/q' | head -n -1 > release_body.md
           [ -s release_body.md ] || echo "Warpbox ${TAG}" > release_body.md
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          body_path: release_body.md
-          files: dist/*
+      - name: Publish release
+        run: python3 .github/workflows/publish.py
         env:
+          TAG: ${{ steps.tag.outputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -220,3 +218,14 @@ jobs:
           echo "  ${REGISTRY}:${TAG} (linux/amd64, canonical)"
           echo "  ${REGISTRY}:${TAG}-amd64 (linux/amd64)"
           echo "  ${REGISTRY}:${TAG}-arm64 (linux/arm64)"
+
+      - name: Push latest tag
+        run: |
+          REGISTRY="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker pull "${REGISTRY}:${TAG}-amd64"
+          docker tag "${REGISTRY}:${TAG}-amd64" "${REGISTRY}:latest"
+          docker push "${REGISTRY}:latest"
+        env:
+          TAG: ${{ steps.tag2.outputs.tag }}
+
+

@@ -24,6 +24,7 @@ RUN apk add --no-cache ca-certificates tzdata wget
 COPY --from=build /warpbox /usr/local/bin/warpbox
 
 COPY docker-entrypoint.sh /usr/local/bin/
+COPY config.yml.example /data/config.yml.example
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 VOLUME /data
