@@ -136,3 +136,14 @@ This page documents all significant architectural and technical decisions made d
 - **Alternatives considered:** bcrypt-hashed passwords (rejected — overkill for a LAN-side UI); Bearer token (rejected — adds header management complexity); protecting WebDAV routes (rejected — would break rclone/Plex integrations).
 - **Implementation:** `internal/config/config.go` (AuthConfig struct, defaults, validation), `internal/server/auth.go` (requireAuth middleware), `internal/server/server.go` (route wrapping), `internal/server/landing.go`/`landing.html` (auth status indicator), `cmd/warpbox/main.go` (wiring).
 - **Issue:** #79
+
+## D-020: Replace worktree-based AI workflow with clone-based workflow
+
+- **Date:** 2026-06-16
+- **Context:** The AI instructions instructed opencode to use git worktrees (`git worktree add`) for isolated issue development. In practice, two problems emerged:
+  1. `opencode --dir` does not exist as a TUI flag — the agent could not launch itself into a worktree directory.
+  2. Git worktrees share the same `.git` and `.opencode/` directory as the main repo, so all opencode sessions are global across all worktrees. Four parallel worktrees on four issues produce session collisions.
+- **Decision:** Use full clones (`git clone . ../warpbox-issue-NN`) instead of worktrees.
+- **Rationale:** Each clone has its own `.opencode/` directory and independent session pool. The user still must manually `cd` into the clone and start a new opencode session (the agent cannot do this), but sessions for different issues do not interfere.
+- **Alternatives considered:** Fixing worktrees by symlinking `.opencode/` per worktree (brittle, no community precedent); staying with worktrees and accepting session collision (confusing); documenting `cd` as the only manual step (accepted).
+- **Outcome:** AI instructions updated from "Worktree Lifecycle" to "Clone Lifecycle".
