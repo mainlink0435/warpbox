@@ -41,3 +41,11 @@ Thumbs.db
 
 # Sensitive credentials (keep local only — use .template for structure)
 docs/auth-matrix.md
+
+# Debug artifacts (board ops testing)
+board_analysis.txt
+board_edit.html
+board_page.html
+issue2.html
+test_results.txt
+$tmp
