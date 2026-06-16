@@ -116,9 +116,6 @@ library:
   #     directory_include: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
   #     file_regex: ".*\\.(mkv|mp4|avi)$"
   #     largest_file_only: true
-  #     directory_regex: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
-  #     file_regex: ".*\\.(mkv|mp4|avi)$"
-  #     largest_file_only: true
   #
   # Shell command to run when items are added to the library (after sync).
   # Receives item directory names as positional arguments.
