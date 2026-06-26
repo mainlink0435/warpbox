@@ -380,13 +380,13 @@ func boolPtr(b bool) *bool {
 func TestListFilesWithParams(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Pagination starts at params.Offset and requests a fixed page window
-		// (listPageSize); params.Limit is now a TOTAL ceiling, not the
+		// (defaultListPageSize); params.Limit is now a TOTAL ceiling, not the
 		// per-request limit.
 		if r.URL.Query().Get("offset") != "10" {
 			t.Errorf("expected offset=10, got %s", r.URL.Query().Get("offset"))
 		}
-		if r.URL.Query().Get("limit") != strconv.Itoa(listPageSize) {
-			t.Errorf("expected limit=%d (page size), got %s", listPageSize, r.URL.Query().Get("limit"))
+		if r.URL.Query().Get("limit") != strconv.Itoa(defaultListPageSize) {
+			t.Errorf("expected limit=%d (page size), got %s", defaultListPageSize, r.URL.Query().Get("limit"))
 		}
 		if r.URL.Query().Get("bypass_cache") != "true" {
 			t.Errorf("expected bypass_cache=true, got %s", r.URL.Query().Get("bypass_cache"))
@@ -409,7 +409,7 @@ func TestListFilesWithParams(t *testing.T) {
 
 // TestListPaginatesPastCap locks in the fix for TorBox's ~10k per-response cap:
 // listGeneric must page through with offset until a short page ends the list,
-// accumulating ALL items, not just the first page. A full page (listPageSize)
+// accumulating ALL items, not just the first page. A full page (pageSize)
 // signals "more follow"; anything shorter is the last page.
 func TestListPaginatesPastCap(t *testing.T) {
 	var calls int
@@ -418,8 +418,8 @@ func TestListPaginatesPastCap(t *testing.T) {
 		var data []Torrent
 		switch r.URL.Query().Get("offset") {
 		case "0":
-			data = make([]Torrent, listPageSize) // full page → more follow
-		case strconv.Itoa(listPageSize):
+			data = make([]Torrent, defaultListPageSize) // full page → more follow
+		case strconv.Itoa(defaultListPageSize):
 			data = make([]Torrent, 7) // short page → end
 		default:
 			t.Errorf("unexpected offset %q", r.URL.Query().Get("offset"))
@@ -433,7 +433,7 @@ func TestListPaginatesPastCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTorrents failed: %v", err)
 	}
-	if want := listPageSize + 7; len(got) != want {
+	if want := defaultListPageSize + 7; len(got) != want {
 		t.Errorf("got %d items, want %d (pagination must accumulate all pages)", len(got), want)
 	}
 	if calls != 2 {

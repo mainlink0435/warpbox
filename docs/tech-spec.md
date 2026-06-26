@@ -787,6 +787,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 |-----|------|---------|------------|-------------|
 | `interval_minutes` | int | `5` | 1–1440 | Metadata sync interval |
 | `limit` | int | `5000` | 1–100000 | Max files per sync cycle |
+| `list_page_size` | int | `5000` | 1–10000 | Per-request page window when paginating mylist API calls |
 | `retry_attempts` | int (pointer) | `3` | 0–10 | Max sync API retry attempts on transient errors (0 = no retry) |
 | `retry_backoff` | int (pointer) | `1` | 1–60 | Sync retry exponential backoff base (seconds) |
 

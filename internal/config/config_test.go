@@ -296,6 +296,19 @@ func TestLoadInvalidSyncInterval(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidSyncListPageSize(t *testing.T) {
+	yaml := "torbox:\n  api_key: \"key\"\nsync:\n  list_page_size: 20000"
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for oversized sync list_page_size, got nil")
+	}
+}
+
 func TestLoadInvalidSyncLimit(t *testing.T) {
 	yaml := "torbox:\n  api_key: \"key\"\nsync:\n  limit: 200000"
 	tmp := t.TempDir() + "/config.yml"

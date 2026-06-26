@@ -139,20 +139,24 @@ type ListFilesParams struct {
 	BypassCache bool
 	Offset      int
 	Limit       int
+	PageSize    int // Per-request page window; 0 uses defaultListPageSize
 }
 
-// listGeneric calls any mylist-style endpoint and decodes the response.
-// listPageSize is the per-request window used when paginating the mylist
+// defaultListPageSize is the fallback per-request window when paginating mylist
 // endpoints. It MUST stay at or below TorBox's per-response cap (observed
-// 10,000) so that a full page reliably equals listPageSize and signals "more
-// pages follow" — a page shorter than this marks the end. Kept well under the
-// cap for headroom in case TorBox lowers it.
-const listPageSize = 1000
+// 10,000) so that a full page reliably equals the page size and signals "more
+// pages follow" — a page shorter than this marks the end.
+const defaultListPageSize = 1000
 
 func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params ListFilesParams) ([]Torrent, error) {
 	base, err := url.Parse(c.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("torbox: invalid base URL: %w", err)
+	}
+
+	pageSize := params.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultListPageSize
 	}
 
 	// TorBox's mylist endpoints cap EACH response at ~10,000 items regardless
@@ -171,7 +175,7 @@ func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params
 		q := u.Query()
 		q.Set("bypass_cache", strconv.FormatBool(params.BypassCache))
 		q.Set("offset", strconv.Itoa(offset))
-		q.Set("limit", strconv.Itoa(listPageSize))
+		q.Set("limit", strconv.Itoa(pageSize))
 		u.RawQuery = q.Encode()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
@@ -180,7 +184,7 @@ func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params
 		}
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-		slog.Debug("torbox "+label, "offset", offset, "limit", listPageSize)
+		slog.Debug("torbox "+label, "offset", offset, "limit", pageSize)
 
 		body, err := c.do(req)
 		if err != nil {
@@ -215,7 +219,7 @@ func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params
 		all = append(all, page...)
 		slog.Debug("torbox "+label+" page", "offset", offset, "got", len(page), "total", len(all))
 
-		if len(page) < listPageSize {
+		if len(page) < pageSize {
 			break // short page → end of list
 		}
 		offset += len(page)

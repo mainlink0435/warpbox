@@ -101,6 +101,12 @@ sync:
   # Must be 1–100000. Default: 5000
   # limit: 5000
 
+  # Items per page when paginating the mylist API.
+  # TorBox caps each response at ~10,000 items, so Warpbox pages through
+  # with this window size. Lower = more API calls but safer; higher = fewer
+  # calls but risks hitting the cap. Must be 1–10000. Default: 5000
+  # list_page_size: 5000
+
   # Maximum number of retry attempts for transient API errors (502, timeout,
   # HTML error pages) during sync. 0 means no retry.
   # Default: 3

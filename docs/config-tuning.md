@@ -29,6 +29,7 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `sync.retry_attempts` | 3 | 0–10 | TorBox API is flaky during sync — increase for more resilience |
 | `sync.retry_backoff` | 1s | 1–60s | Longer pauses between retries to avoid hammering the API |
 | `sync.limit` | 5000 | 1–100000 | Your library is larger than 5000 files and some aren't appearing |
+| `sync.list_page_size` | 5000 | 1–10000 | You want to tweak API call frequency vs. pagination safety |
 | `stats.retention_hours` | 24 | 1–720 | You want longer history on the sparkline charts |
 | `stats.chart_minutes` | 60 | 1–1440 | You want the landing page chart to show a shorter or longer window |
 | `auth.enabled` | false | true/false | The web UI is accessible to others on your network |
@@ -75,6 +76,22 @@ TorBox CDN URLs expire after a few hours. The `cdn_url_ttl_minutes` default of
 see `stale CDN URL detected` in the logs, the TTL might be too long for your
 use pattern. The auto-repair feature (default on) handles stale URLs
 transparently, but each repair costs one API call.
+
+### Mylist pagination
+
+When fetching your torrent and Usenet lists, Warpbox pages through TorBox's API
+in windows of `sync.list_page_size` items (default 5000). TorBox itself caps
+each response at ~10,000 items regardless of the requested `limit`, so pagination
+is required to avoid silently dropping the oldest items on larger libraries.
+
+The tradeoff is page size vs. API calls:
+- **5000** — 3 calls for a 10k library, safe headroom below TorBox's cap
+- **8000** — 2 calls, tighter but TorBox's ~10k cap still provides margin
+- **1000** — ~11 calls, most conservative if you're paranoid about the cap lowering
+
+You probably don't need to change this unless you're on a very slow connection
+and want to minimise API calls, or you have a very small library and want a
+faster initial sync.
 
 ### Sync limit and library size
 

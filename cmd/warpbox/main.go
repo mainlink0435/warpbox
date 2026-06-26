@@ -125,6 +125,7 @@ func main() {
 		throttleQueue,
 		time.Duration(cfg.Sync.IntervalMinutes)*time.Minute,
 		cfg.Sync.Limit,
+		cfg.Sync.ListPageSize,
 		*cfg.Sync.RetryAttempts,
 		time.Duration(*cfg.Sync.RetryBackoff)*time.Second,
 	)
