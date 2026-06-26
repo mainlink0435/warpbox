@@ -64,7 +64,7 @@ This page covers common problems, what they mean, and how to fix them.
 | Cause | Fix |
 |-------|-----|
 | Circuit breaker tripped on a torrent | A torrent with repeated failures is quarantined (default 5 minutes). The breaker auto-resets. This is normal — it stops one bad torrent from burning the rate budget. |
-| TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries every 15 seconds. |
+| TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries with exponential backoff (15s → 30s → 60s → 2min → 5min max on repeated 429s). |
 | `cdn_url_ttl_minutes` set too high | Stale URLs fail on first use, triggering repair. Default 120 minutes is safe. Reduce if you see frequent stale URL warnings. |
 
 ## Web UI not accessible

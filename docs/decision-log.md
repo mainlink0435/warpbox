@@ -107,6 +107,22 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/server/get.go` lines 192-215.
 - **Issue:** #64
 
+## D-015b: CDN hang/poll 429 exponential backoff (extends D-015)
+
+- **Date:** 2026-06-26
+- **Context:** `handleGetCDNHang` polled at a fixed 15-second interval. When
+  TorBox rate-limited `requestdl` per-item, the fixed polling created a death
+  spiral — calling every 15s kept the per-item limit from ever resetting.
+- **Decision:** Add exponential backoff inside the hang/poll loop. On each
+  429 response from `fetchCDNURL()`, double the poll interval
+  (15s → 30s → 60s → 2min → 5min max). Non-429 failures keep the current
+  interval. Uses `time.After(interval)` instead of a fixed `time.Ticker`.
+- **Rationale:** Items stuck in a 429 loop back off to 5-minute intervals,
+  reducing API calls per item from ~2/min to ~0.4/min. Items that succeed on
+  the first poll attempt are unaffected (interval stays at 15s).
+- **Implementation:** `internal/server/get.go` — `handleGetCDNHang` poll loop.
+- **Issue:** (none — discovered during deployment log review)
+
 ## D-016: CDN connection semaphore + reduced default concurrency 8→4
 
 - **Date:** 2026-06-11

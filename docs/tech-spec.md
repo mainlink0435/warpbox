@@ -61,7 +61,7 @@ If you change the code, update this spec.
 
 12. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
 
-13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, limit)`:
+13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, limit, listPageSize, retryAttempts, retryBackoff)`:
     - Stores references to the metadata store, TorBox client, throttle queue, interval, and limit
     - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)` when configured
     - `go syncWorker.Start(ctx)` — runs the periodic sync loop in a background goroutine
@@ -278,7 +278,11 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
      - Enter hang/poll mode (see below)
    - **Other non-2xx:** `502 Bad Gateway` to client
    - **403/404 exhausted (no retries remaining):** File key is added to the negative cache with `NegativeCacheTTLSeconds` TTL. Subsequent requests for this file skip the API and enter hang/poll mode directly, preventing retry storms.
-   - **200/206:** Proceed to streaming
+   - **200/206 with text Content-Type:** TorBox's CDN may return HTTP 200/206
+     with a text/HTML/JSON body when rate-limiting instead of a proper 429.
+     If the response Content-Type is `text/*`, `html`, or `json`, treat it as
+     a transient error: invalidate the cached CDN URL and enter hang/poll mode.
+   - **200/206 (binary):** Proceed to streaming
 
 5. **CDN connection semaphore.** Before proxy streaming, `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when done. Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
 
@@ -299,9 +303,13 @@ Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) 
 
 1. **Immediate success headers.** Send `200 OK` or `206 Partial Content` with full response headers (Content-Type, Content-Length, Accept-Ranges, Content-Range) BEFORE any data is available. This makes rclone think the connection succeeded (it will wait for data).
 
-2. **Poll loop.** `time.NewTicker(cdnPollInterval)` — polls `fetchCDNURL()` every 15 seconds:
+2. **Poll loop with 429 backoff.** Starts at `cdnPollInterval` (15s). If
+   `fetchCDNURL()` returns a 429 (per-item `requestdl` rate limit), the poll
+   interval doubles exponentially (30s → 60s → 2min → 5min max). Non-429
+   failures keep the current interval. Uses `time.After(interval)` instead of
+   a fixed ticker:
    - URL recovered → cache it, proxy data from CDN, exit
-   - Still unavailable → `select { case <-r.Context().Done(): cleanup and return | case <-ticker.C: continue }`
+   - Still unavailable → `select { case <-r.Context().Done(): cleanup and return | case <-time.After(interval): continue }`
    - Client disconnect → clean exit (context cancelled), logged at DEBUG
 
 3. **Data proxy after recovery.** Acquire CDN connection slot, proxy GET with content range, `io.Copy` to client.
@@ -378,13 +386,19 @@ worker to decide whether to retry a failed API call.
 
 ### List Endpoints
 
-Both `ListTorrents` and `ListUsenet` use `listGeneric[T]`:
+Both `ListTorrents` and `ListUsenet` use `listGeneric[T]` which paginates
+through TorBox's API with an offset loop (page size controlled by
+`sync.list_page_size`, default 5000). TorBox caps each response at ~10,000
+items regardless of the requested `limit`, so pagination prevents silent
+data loss on large accounts.
 
 ```go
 func (c *Client) listGeneric(ctx, endpoint, label, params) ([]Torrent, error)
 ```
 
 - Builds URL with `bypass_cache`, `offset`, `limit` query parameters.
+- The loop accumulates pages until a short page signals the end.
+- `params.Limit` (when > 0) is a ceiling on the TOTAL, not a per-request limit.
 - Sends Bearer token via Authorization header.
 - Returns Torrent struct (Usenet API returns the same JSON shape).
 - Params: `ListFilesParams{BypassCache bool, Offset int, Limit int}`
@@ -432,7 +446,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, limit, retryAttempts, retryBackoff)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, limit, listPageSize, retryAttempts, retryBackoff)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
