@@ -551,9 +551,10 @@ const cdnPollInterval = 15 * time.Second
 // handleGetCDNHang is entered when the CDN URL cannot be fetched and we want
 // to avoid returning an error (which rclone counts toward maxErrorCount=10).
 //
-// It sends success HTTP headers immediately, then polls fetchCDNURL every
-// cdnPollInterval until the CDN recovers. Once a URL is obtained, it proxies
-// the file data from the CDN transparently.
+// It sends success HTTP headers immediately, then polls fetchCDNURL with
+// exponential backoff when rate-limited (starts at cdnPollInterval, doubles
+// on each 429 to a 5-minute max). Once a URL is obtained, it proxies the
+// file data from the CDN transparently.
 //
 // If the client disconnects (context cancelled), we clean up and exit.
 // If rclone's --timeout (default 5m) fires, the connection drops and rclone
@@ -598,9 +599,9 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 		w.WriteHeader(http.StatusOK)
 	}
 
-	// Poll for CDN URL.
-	ticker := time.NewTicker(cdnPollInterval)
-	defer ticker.Stop()
+	// Poll for CDN URL with exponential backoff on rate-limit errors.
+	pollInterval := cdnPollInterval
+	const maxPollInterval = 5 * time.Minute
 
 	var cdnURL string
 	for {
@@ -616,14 +617,31 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			break
 		}
 
+		// Exponential backoff when rate-limited by TorBox's per-item
+		// requestdl limit. Keep doubling until max cap, letting the rate
+		// limit reset between attempts.
+		if strings.Contains(fetchErr.Error(), "unexpected status 429") {
+			pollInterval *= 2
+			if pollInterval > maxPollInterval {
+				pollInterval = maxPollInterval
+			}
+			slog.Warn("GET (hang): rate-limited, increasing poll backoff",
+				"path", file.Path,
+				"source", file.Source,
+				"item_id", file.ItemID,
+				"file_id", file.FileID,
+				"next_poll", pollInterval,
+				"error", fetchErr,
+			)
+		}
+
 		select {
 		case <-r.Context().Done():
 			slog.Debug("client disconnected while waiting for CDN",
 				"path", file.Path,
 			)
 			return
-		case <-ticker.C:
-			// Continue polling.
+		case <-time.After(pollInterval):
 		}
 	}
 
