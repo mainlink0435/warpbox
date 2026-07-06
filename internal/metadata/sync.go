@@ -25,6 +25,7 @@ type SyncWorker struct {
 	queue          *throttle.Queue
 	interval       time.Duration
 	listPageSize   int
+	bypassCache    bool
 	retryAttempts  int
 	retryBackoff   time.Duration
 	lastError      error
@@ -61,13 +62,14 @@ func (w *SyncWorker) Status() SyncStatus {
 // listPageSize is the per-request page window when paginating mylist API calls.
 // retryAttempts is the max number of retries for transient API errors.
 // retryBackoff is the base backoff duration (exponential: 1x, 2x, 4x).
-func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, listPageSize int, retryAttempts int, retryBackoff time.Duration) *SyncWorker {
+func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, listPageSize int, bypassCache bool, retryAttempts int, retryBackoff time.Duration) *SyncWorker {
 	return &SyncWorker{
 		store:          store,
 		client:         client,
 		queue:          queue,
 		interval:       interval,
 		listPageSize:   listPageSize,
+		bypassCache:    bypassCache,
 		retryAttempts:  retryAttempts,
 		retryBackoff:   retryBackoff,
 	}
@@ -280,7 +282,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 					}
 				}
 			torrents, err = w.client.ListTorrents(ctx, torbox.ListFilesParams{
-				BypassCache: false,
+				BypassCache: w.bypassCache,
 				Offset:      0,
 				PageSize:    w.listPageSize,
 			})
@@ -313,7 +315,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 					}
 				}
 			usenet, err = w.client.ListUsenet(ctx, torbox.ListFilesParams{
-				BypassCache: false,
+				BypassCache: w.bypassCache,
 				Offset:      0,
 				PageSize:    w.listPageSize,
 			})

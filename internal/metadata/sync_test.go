@@ -113,12 +113,12 @@ func TestBuildFileRecordSanitizesPath(t *testing.T) {
 }
 
 func TestSyncWorker_Stop_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, 3, time.Second)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second)
 	w.Stop()
 }
 
 func TestSyncWorker_Restart_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, 3, time.Second)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second)
 	w.Restart()
 }
 
@@ -144,7 +144,7 @@ func newTestSyncEnv(t *testing.T) (*SyncWorker, *httptest.Server, *Store, func()
 	qCtx, qCancel := context.WithCancel(context.Background())
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, 3, time.Second)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 3, time.Second)
 
 	cleanup := func() {
 		qCancel()
@@ -215,7 +215,7 @@ func newTestSyncEnvWithHandler(t *testing.T, handler http.HandlerFunc, retryAtte
 	qCtx, qCancel := context.WithCancel(context.Background())
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, retryAttempts, retryBackoff)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, retryAttempts, retryBackoff)
 
 	cleanup := func() {
 		qCancel()

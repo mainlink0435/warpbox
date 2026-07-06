@@ -64,8 +64,9 @@ type LoggingConfig struct {
 
 // SyncConfig holds metadata sync settings.
 type SyncConfig struct {
-	IntervalMinutes int `yaml:"interval_minutes"` // Default: 5
-	ListPageSize    int `yaml:"list_page_size"`   // Items per page when paginating mylist API; default: 5000
+	IntervalMinutes int  `yaml:"interval_minutes"` // Default: 5
+	ListPageSize    int  `yaml:"list_page_size"`   // Items per page when paginating mylist API; default: 5000
+	BypassCache     bool `yaml:"bypass_cache"`     // Bypass TorBox cache when fetching torrent list; default false
 	RetryAttempts   *int `yaml:"retry_attempts"`   // Max retries for sync API errors; nil→default 3
 	RetryBackoff    *int `yaml:"retry_backoff"`    // Base backoff seconds for sync retries; nil→default 1
 }
