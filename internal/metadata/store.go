@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -26,7 +28,8 @@ const (
 
 // Store is a SQLite-backed metadata cache.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	dbPath string // Filesystem path to the SQLite database file.
 
 	// dbLockErrors counts "database is locked" errors for diagnostics.
 	dbLockErrors atomic.Int64
@@ -80,7 +83,7 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("pinging sqlite database: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
@@ -92,7 +95,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// migrate creates tables if they do not exist.
+// currentSchemaVersion is the latest schema version tracked via PRAGMA user_version.
+const currentSchemaVersion = 2
+
+// migrate creates tables if they do not exist and runs any pending schema
+// upgrades. Upgrades are one-way: downgrading requires deleting the database
+// file and re-syncing (the database is a cache derived from the TorBox API).
 func (s *Store) migrate() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS files (
@@ -101,14 +109,15 @@ func (s *Store) migrate() error {
 		file_id         INTEGER NOT NULL DEFAULT 0,
 		source          INTEGER NOT NULL DEFAULT 0,
 		name            TEXT    NOT NULL,
-		path            TEXT    NOT NULL UNIQUE,
+		path            TEXT    NOT NULL,
 		size            INTEGER NOT NULL DEFAULT 0,
 		mime_type       TEXT    NOT NULL DEFAULT '',
 		cdn_url         TEXT    NOT NULL DEFAULT '',
 		cdn_url_expires TEXT    NOT NULL DEFAULT '',
 		created_at      TEXT    NOT NULL DEFAULT '',
 		sync_tag        INTEGER NOT NULL DEFAULT 0,
-		updated         TEXT    NOT NULL DEFAULT (datetime('now'))
+		updated         TEXT    NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(source, item_id, file_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 	CREATE INDEX IF NOT EXISTS idx_files_source_file_id ON files(source, file_id);
@@ -121,27 +130,76 @@ func (s *Store) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_stats_metric_time ON stats(metric, timestamp);
 	`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Detect old schemas by inspecting the CREATE TABLE text. The v2 schema
+	// has "UNIQUE(source, item_id, file_id)" as a table-level constraint.
+	// If we don't see that marker, the table was not replaced by CREATE TABLE
+	// IF NOT EXISTS (it already existed as a pre-v2 schema).
+	//
+	// We check for the ABSENCE of the v2 marker rather than the presence of
+	// a v1 marker (e.g. "path TEXT NOT NULL UNIQUE") because SQLite may
+	// normalise whitespace or keyword ordering in the stored text across
+	// different platforms, making a string-match on v1 text unreliable.
+	var createSQL string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
+		return fmt.Errorf("reading files table schema: %w", err)
+	}
+
+	if !strings.Contains(createSQL, "UNIQUE(source, item_id, file_id)") {
+		// v1 schema detected — upgrade by deleting and recreating the database.
+		// This is a one-way upgrade. To downgrade, delete warpbox.db and re-sync.
+		slog.Info("database schema upgrade needed, recreating for v2",
+			"reason", "v2 unique constraint marker not found in CREATE TABLE",
+		)
+		s.db.Close()
+
+		// Remove the database file along with any WAL / SHM artefacts.
+		for _, ext := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(s.dbPath + ext); err != nil && !os.IsNotExist(err) {
+				slog.Warn("removing database file during migration", "path", s.dbPath+ext, "error", err)
+			}
+		}
+
+		db, err := sql.Open("sqlite3", s.dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_cache_size=-8192")
+		if err != nil {
+			return fmt.Errorf("reopening database after schema upgrade: %w", err)
+		}
+		s.db = db
+
+		if _, err := s.db.Exec(schema); err != nil {
+			return fmt.Errorf("creating schema in upgraded database: %w", err)
+		}
+
+		slog.Info("database recreated for schema v2")
+	}
+
+	// Stamp the current version (SET is idempotent).
+	if _, err := s.db.Exec("PRAGMA user_version = " + strconv.Itoa(currentSchemaVersion)); err != nil {
+		return fmt.Errorf("setting schema version: %w", err)
+	}
+
+	return nil
 }
 
 // UpsertFile inserts or replaces a file record.
+// Uniqueness is enforced by (source, item_id, file_id) — the natural TorBox
+// key. Two different TorBox items sharing the same virtual path produce
+// separate rows; callers should deduplicate by path at the display layer.
 // The SyncTag field is used to tag records with the current sync batch
 // so that PruneBySyncTag can delete records not touched by the latest sync.
 func (s *Store) UpsertFile(f FileRecord) error {
 	_, err := s.db.Exec(`
 		INSERT INTO files (item_id, file_id, source, name, path, size, mime_type, created_at, cdn_url, cdn_url_expires, sync_tag, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-		ON CONFLICT(path) DO UPDATE SET
-			item_id         = excluded.item_id,
-			file_id         = excluded.file_id,
-			source          = excluded.source,
+		ON CONFLICT(source, item_id, file_id) DO UPDATE SET
 			name            = excluded.name,
+			path            = excluded.path,
 			size            = excluded.size,
 			mime_type       = excluded.mime_type,
 			created_at      = excluded.created_at,
-			cdn_url         = excluded.cdn_url,
-			cdn_url_expires = excluded.cdn_url_expires,
 			sync_tag        = excluded.sync_tag,
 			updated         = excluded.updated
 	`, f.ItemID, f.FileID, f.Source, f.Name, f.Path, f.Size, f.MimeType, f.CreatedAt, f.CDNURL, f.CDNURLExpiry, f.SyncTag)
@@ -152,11 +210,16 @@ func (s *Store) UpsertFile(f FileRecord) error {
 }
 
 // ListDir returns all files under the given virtual directory path.
+// Duplicate paths (same underlying file from different TorBox items) are
+// collapsed to a single entry using the highest internal id.
 func (s *Store) ListDir(prefix string) ([]FileRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at FROM files
-		WHERE path LIKE ? ORDER BY name
-	`, prefix+"%")
+		WHERE path LIKE ? AND id IN (
+			SELECT MAX(id) FROM files WHERE path LIKE ? GROUP BY path
+		)
+		ORDER BY name
+	`, prefix+"%", prefix+"%")
 	if err != nil {
 		return nil, fmt.Errorf("querying files: %w", err)
 	}
@@ -173,12 +236,14 @@ func (s *Store) ListDir(prefix string) ([]FileRecord, error) {
 	return files, rows.Err()
 }
 
-// GetFileByPath returns a single file record by its virtual path.
+// GetFileByPath returns the primary file record for a virtual path.
+// When multiple TorBox items share the same path (duplicate), the record
+// with the highest internal id (last upserted) is returned.
 // Returns nil if the path is not found.
 func (s *Store) GetFileByPath(path string) (*FileRecord, error) {
 	row := s.db.QueryRow(`
 		SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at, cdn_url, cdn_url_expires
-		FROM files WHERE path = ?
+		FROM files WHERE path = ? ORDER BY id DESC LIMIT 1
 	`, path)
 
 	var f FileRecord
@@ -190,6 +255,33 @@ func (s *Store) GetFileByPath(path string) (*FileRecord, error) {
 		return nil, fmt.Errorf("querying file by path: %w", err)
 	}
 	return &f, nil
+}
+
+// GetFileAlternatives returns all file records for the given virtual path
+// except the primary (highest id) record. Use this for CDN URL fallback
+// when the primary TorBox item is no longer accessible.
+func (s *Store) GetFileAlternatives(path string) ([]FileRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at
+		FROM files WHERE path = ? AND id != (
+			SELECT MAX(id) FROM files WHERE path = ?
+		)
+		ORDER BY id DESC
+	`, path, path)
+	if err != nil {
+		return nil, fmt.Errorf("querying file alternatives: %w", err)
+	}
+	defer rows.Close()
+
+	var files []FileRecord
+	for rows.Next() {
+		var f FileRecord
+		if err := rows.Scan(&f.ID, &f.ItemID, &f.FileID, &f.Source, &f.Name, &f.Path, &f.Size, &f.MimeType, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning alternative file: %w", err)
+		}
+		files = append(files, f)
+	}
+	return files, rows.Err()
 }
 
 // GetFileByFileID returns a single file record by its TorBox file ID and source.
@@ -317,12 +409,25 @@ func (s *Store) ListItemDirs() ([]ItemDir, error) {
 	return items, rows.Err()
 }
 
-// CountFiles returns the total number of file records in the store.
+// CountFiles returns the total number of file rows in the store.
+// This counts every row including duplicates (same virtual path from
+// multiple TorBox items). For the deduplicated count use CountDistinctPaths.
 func (s *Store) CountFiles() (int, error) {
 	row := s.db.QueryRow(`SELECT COUNT(*) FROM files`)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		return 0, fmt.Errorf("counting files: %w", err)
+	}
+	return count, nil
+}
+
+// CountDistinctPaths returns the number of unique virtual paths in the store.
+// This reflects what users see in the WebDAV listing (deduplicated).
+func (s *Store) CountDistinctPaths() (int, error) {
+	row := s.db.QueryRow(`SELECT COUNT(DISTINCT path) FROM files`)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting distinct paths: %w", err)
 	}
 	return count, nil
 }

@@ -102,19 +102,24 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// No cached CDN URL — fetch one via the throttle queue.
 		cdnURL, err = s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 		if err != nil {
-			// CDN is temporarily unavailable. Instead of returning an error (which
-			// rclone counts toward maxErrorCount=10, causing Plex to trash the file),
-			// send success headers immediately and hold the connection while polling
-			// for the CDN URL. This looks like a slow spinning disk to Plex.
-			slog.Warn("GET: CDN URL unavailable, entering hang/poll mode",
-				"path", file.Path,
-				"source", file.Source,
-				"item_id", file.ItemID,
-				"file_id", file.FileID,
-				"error", err,
-			)
-			s.handleGetCDNHang(w, r, file)
-			return
+			// Primary fetch failed — try alternatives (same path, different TorBox item).
+			cdnURL, err = s.tryCDNFallback(file.Path)
+			if err != nil {
+				// All alternatives also failed. Instead of returning an error (which
+				// rclone counts toward maxErrorCount=10, causing Plex to trash the file),
+				// send success headers immediately and hold the connection while polling
+				// for the CDN URL. This looks like a slow spinning disk to Plex.
+				slog.Warn("GET: CDN URL unavailable (primary + alternatives), entering hang/poll mode",
+					"path", file.Path,
+					"source", file.Source,
+					"item_id", file.ItemID,
+					"file_id", file.FileID,
+					"alternatives", file.Path != "",
+					"error", err,
+				)
+				s.handleGetCDNHang(w, r, file)
+				return
+			}
 		}
 
 		// Cache the CDN URL if TTL > 0.
@@ -187,13 +192,20 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 			newURL, refreshErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 			if refreshErr != nil {
-				slog.Error("GET: CDN URL refresh failed",
+				// Primary refresh failed — try alternatives.
+				newURL, refreshErr = s.tryCDNFallback(file.Path)
+				if refreshErr != nil {
+					slog.Error("GET: CDN URL refresh failed (primary + alternatives)",
+						"path", file.Path,
+						"attempt", attempt+1,
+						"error", refreshErr,
+					)
+					http.Error(w, "CDN URL refresh failed", http.StatusBadGateway)
+					return
+				}
+				slog.Info("CDN URL refresh succeeded via alternative item",
 					"path", file.Path,
-					"attempt", attempt+1,
-					"error", refreshErr,
 				)
-				http.Error(w, "CDN URL refresh failed", http.StatusBadGateway)
-				return
 			}
 
 			// Update the cached CDN URL.
@@ -544,6 +556,37 @@ func (s *Server) fetchCDNURL(source metadata.FileSource, itemID, fileID int64) (
 	return cdnURL, nil
 }
 
+// tryCDNFallback queries alternative TorBox items sharing the same virtual
+// path and tries to fetch a CDN URL from each in turn. Returns the first
+// successful URL. If none succeed, returns the last error.
+// This provides resilience when the primary item has been deleted from
+// TorBox but alternative duplicates still exist in the database.
+func (s *Server) tryCDNFallback(path string) (string, error) {
+	alternatives, err := s.store.GetFileAlternatives(path)
+	if err != nil {
+		return "", fmt.Errorf("querying alternatives: %w", err)
+	}
+	if len(alternatives) == 0 {
+		return "", fmt.Errorf("no alternatives for path %q", path)
+	}
+
+	var lastErr error
+	for _, alt := range alternatives {
+		altURL, altErr := s.fetchCDNURL(alt.Source, alt.ItemID, alt.FileID)
+		if altErr == nil {
+			slog.Info("CDN URL obtained from alternative item",
+				"path", path,
+				"alt_source", alt.Source,
+				"alt_item_id", alt.ItemID,
+				"alt_file_id", alt.FileID,
+			)
+			return altURL, nil
+		}
+		lastErr = altErr
+	}
+	return "", fmt.Errorf("all alternatives failed: %w", lastErr)
+}
+
 // cdnPollInterval is how long to wait between CDN URL fetch attempts when
 // the CDN is unavailable and we are hanging the connection open.
 const cdnPollInterval = 15 * time.Second
@@ -607,6 +650,10 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 	for {
 		var fetchErr error
 		cdnURL, fetchErr = s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
+		if fetchErr != nil {
+			// Primary not available — try alternatives before looping.
+			cdnURL, fetchErr = s.tryCDNFallback(file.Path)
+		}
 		if fetchErr == nil {
 			slog.Info("CDN URL recovered, proxying data",
 				"path", file.Path,

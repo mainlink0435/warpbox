@@ -32,7 +32,9 @@ func main() {
 	if err := row.Scan(&count, &totalSize, &minSize, &maxSize, &torrentCount); err != nil {
 		fmt.Fprintf(os.Stderr, "query error: %v\n", err)
 	} else {
-		fmt.Printf("  Files:         %d\n", count)
+		var distinct int64
+		db.QueryRow(`SELECT COUNT(DISTINCT path) FROM files`).Scan(&distinct)
+		fmt.Printf("  Files:         %d total / %d unique (by path)\n", count, distinct)
 		fmt.Printf("  Torrents:      %d\n", torrentCount)
 		fmt.Printf("  Total size:    %s\n", formatSize(totalSize))
 		fmt.Printf("  Min file size: %s\n", formatSize(minSize))
@@ -95,12 +97,13 @@ func main() {
 		fmt.Println("  ✅ No zero-size files")
 	}
 
-	var dupes int64
-	db.QueryRow(`SELECT COUNT(*) FROM (SELECT path FROM files GROUP BY path HAVING COUNT(*) > 1)`).Scan(&dupes)
-	if dupes > 0 {
-		fmt.Printf("  ⚠️  %d duplicate paths\n", dupes)
+	// (source, item_id, file_id) should always be unique in v2 schema.
+	var dupKeys int64
+	db.QueryRow(`SELECT COUNT(*) FROM (SELECT source, item_id, file_id FROM files GROUP BY source, item_id, file_id HAVING COUNT(*) > 1)`).Scan(&dupKeys)
+	if dupKeys > 0 {
+		fmt.Printf("  ⚠️  %d records with duplicate (source, item_id, file_id) — should not happen\n", dupKeys)
 	} else {
-		fmt.Println("  ✅ No duplicate paths (unique constraint enforced)")
+		fmt.Println("  ✅ No duplicate (source, item_id, file_id) keys")
 	}
 }
 

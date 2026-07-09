@@ -5,6 +5,22 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.0] - 2026-07-09
+
+### Added
+- CDN URL fallback to alternative TorBox items when the primary item's file cannot be fetched — improves resilience when duplicate downloads exist
+- Unique path count on landing page (shown as "N total / M unique")
+- `CountDistinctPaths()` store method for deduplicated file counts
+- `GetFileAlternatives()` store method for querying duplicate entries
+
+### Changed
+- **Database schema v2:** File uniqueness is now enforced by `(source, item_id, file_id)` instead of `path`. Duplicate virtual paths from different TorBox items are preserved as separate rows. Existing databases are automatically recreated on first startup — the cache will repopulate on the next sync cycle. **This is a one-way upgrade; to downgrade, delete `warpbox.db` and re-sync.**
+- `UpsertFile` conflict target changed from `path` to `(source, item_id, file_id)` — CDN URL cache fields are preserved on conflict
+- `GetFileByPath` returns the highest-internal-ID record when duplicates exist (deterministic tiebreaker)
+- `ListDir` deduplicates by path (one row per unique path)
+- Landing page shows both total file rows and distinct virtual paths
+- `dbinspect` diagnostic tool updated for new schema checks
+
 ## [v0.6.0] - 2026-06-26
 
 ### Added
@@ -96,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.6.0...HEAD
+[Unreleased]: /compare/v0.7.0...HEAD
+[v0.7.0]: /compare/v0.6.0...v0.7.0
 [v0.6.0]: /compare/v0.5.4...v0.6.0
 
 [v0.5.4]: /compare/v0.5.3...v0.5.4

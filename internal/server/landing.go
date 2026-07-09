@@ -38,7 +38,8 @@ func mustReadString(fs embed.FS, name string) string {
 type LandingData struct {
 	Version              string
 	Uptime               string
-	FileCount            int
+	FileCount            int // Total rows (may include duplicates from multiple TorBox items)
+	FileCountUnique      int // Unique virtual paths (what users see in WebDAV)
 	ItemCount            int
 	WebDAVURL            string
 	HTTPURL              string
@@ -125,6 +126,11 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		slog.Error("landing: CountFiles failed", "error", err)
 		fileCount = -1
 	}
+	fileCountUnique, err := s.store.CountDistinctPaths()
+	if err != nil {
+		slog.Error("landing: CountDistinctPaths failed", "error", err)
+		fileCountUnique = -1
+	}
 	itemCount, err := s.store.CountItems()
 	if err != nil {
 		slog.Error("landing: CountItems failed", "error", err)
@@ -163,6 +169,7 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		Version:             s.cfg.Version,
 		Uptime:              uptimeStr,
 		FileCount:           fileCount,
+		FileCountUnique:     fileCountUnique,
 		ItemCount:           itemCount,
 		WebDAVURL:           s.root + "/",
 		HTTPURL:             "/http/",

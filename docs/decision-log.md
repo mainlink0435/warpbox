@@ -179,3 +179,17 @@ This page documents all significant architectural and technical decisions made d
 - **Rationale:** Extends the existing D-008 retry/backoff/negative-cache pattern to (a) the sync path and (b) the CDN proxy path. The unified `IsRetryable()` prevents retry-logic drift between the two call sites.
 - **Config:** `sync.retry_backoff` (1–60, default 1), `sync.retry_attempts` (0–10, default 3). Existing `negative_cache_ttl_seconds` and `cdn_url_retry_*` keys are reused.
 - **Implementation:** `internal/torbox/client.go` (IsRetryable, HTML logging), `internal/metadata/sync.go` (retry), `internal/server/get.go` (CDN 404 negative cache).
+
+## D-022: Store duplicates by (source, item_id, file_id) instead of overwriting on path collision
+
+- **Date:** 2026-07-09
+- **Context:** A user added the same usenet download twice by scripting error. TorBox returned two separate items with different hashes but identical directory structures. The previous UNIQUE(path) constraint caused the second item to silently overwrite the first, losing the alternative item_id/file_id needed for CDN URL fallback. If the overwriting item was later deleted from TorBox, streaming would fail until the next sync.
+- **Decision:** Remove UNIQUE(path) and enforce uniqueness on (source, item_id, file_id) — the natural TorBox key. Duplicate virtual paths (same path from different items) are preserved as separate rows. Deduplication happens at the query/display layer:
+  - `GetFileByPath` returns the highest-internal-id row (last upserted).
+  - `ListDir` deduplicates by path using MAX(id) subquery.
+  - `GetFileAlternatives` returns non-primary rows for CDN fallback.
+- **CDN fallback:** When the primary item's `requestdl` fails, `tryCDNFallback` queries alternatives and tries each. The fallback is read-only — no DB writes. On next sync, deleted items are pruned naturally by `PruneBySyncTag`.
+- **Schema upgrade:** v1 databases are detected by inspecting the `CREATE TABLE` text for `path TEXT NOT NULL UNIQUE`. The database file is deleted and recreated automatically. This is a one-way upgrade — downgrading requires deleting `warpbox.db` and re-syncing.
+- **Rationale:** The database is a cache derived from the TorBox API — it self-heals on the next sync cycle. A destructive schema upgrade is simpler and less risky than a table copy/rename migration. Since the DB holds no unique data (everything comes from the API), auto-recreate is safe.
+- **Config impact:** None. The landing page now shows both total and unique file counts.
+- **Implementation:** `internal/metadata/store.go` (schema, queries, migration), `internal/server/get.go` (CDN fallback), `internal/server/landing.go` (dual counts), `internal/tools/dbinspect/main.go` (updated checks).

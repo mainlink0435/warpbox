@@ -19,6 +19,9 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 ## State & Caching Patterns
 
 - **Persistent State (Metadata):** SQLite in WAL (Write-Ahead Logging) mode for the virtual directory structure, file metadata, and cache pointers. Enables zero-API directory browsing.
+  - **Uniqueness model:** File records are keyed by `(source, item_id, file_id)` — the natural TorBox identifier. Two different TorBox items sharing the same virtual path produce separate rows. The display layer deduplicates by path (`GetFileByPath` returns highest-ID record, `ListDir` collapses duplicates).
+  - **CDN fallback:** When the primary item's CDN URL fetch fails, alternative items (same path, different `item_id`) are tried before falling back to hang/poll mode.
+  - **Schema upgrades:** The database is a cache derived from the TorBox API. v1→v2 upgrades recreate the database file automatically (one-way; downgrading requires deleting `warpbox.db` and re-syncing).
 - **Ephemeral State (Data):** CDN proxy passthrough. No intermediate memory buffering — all data streams directly through the CDN proxy from TorBox's origin servers to the client. The proxy handles concurrent connections via a semaphore-controlled pool (configurable via `max_cdn_connections`).
 
 ## Logging

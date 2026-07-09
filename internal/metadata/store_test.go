@@ -1,8 +1,10 @@
 package metadata
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -245,16 +247,41 @@ func TestUpsertDuplicatePathDifferentTorrent(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 
-	// Different torrents, same path — upsert should work (path is unique).
+	// Different torrents, same path — both rows are preserved because the
+	// UNIQUE constraint is on (source, item_id, file_id), not path.
 	s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/f.mkv", Size: 100})
 	s.UpsertFile(FileRecord{ItemID: 2, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/f.mkv", Size: 200})
 
+	// Both rows should exist.
 	got, _ := s.GetFileByFileID(SourceTorrent, 1)
-	if got.ItemID != 2 {
-		t.Errorf("item_id = %d, want 2 (last upsert wins)", got.ItemID)
+	if got == nil {
+		t.Fatal("expected a file record, got nil")
 	}
-	if got.Size != 200 {
-		t.Errorf("size = %d, want 200", got.Size)
+	// GetFileByFileID returns the first match; item_id could be 1 or 2.
+	// The important thing is both records exist.
+
+	// GetFileByPath returns the primary (highest id) — should be the second upsert.
+	primary, err := s.GetFileByPath("/f.mkv")
+	if err != nil {
+		t.Fatalf("GetFileByPath failed: %v", err)
+	}
+	if primary.ItemID != 2 {
+		t.Errorf("primary item_id = %d, want 2 (highest id wins)", primary.ItemID)
+	}
+	if primary.Size != 200 {
+		t.Errorf("primary size = %d, want 200", primary.Size)
+	}
+
+	// GetFileAlternatives should return the other one.
+	alternatives, err := s.GetFileAlternatives("/f.mkv")
+	if err != nil {
+		t.Fatalf("GetFileAlternatives failed: %v", err)
+	}
+	if len(alternatives) != 1 {
+		t.Fatalf("expected 1 alternative, got %d", len(alternatives))
+	}
+	if alternatives[0].ItemID != 1 {
+		t.Errorf("alternative item_id = %d, want 1", alternatives[0].ItemID)
 	}
 }
 
@@ -618,5 +645,192 @@ func TestPruneBySyncTag_batchMultiple(t *testing.T) {
 	}
 	if survivor == nil {
 		t.Error("survivor file with sync_tag=2 should survive")
+	}
+}
+
+func TestGetFileAlternatives(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Two different items with the same path.
+	s.UpsertFile(FileRecord{ItemID: 10, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/dup.mkv", Size: 100})
+	s.UpsertFile(FileRecord{ItemID: 20, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/dup.mkv", Size: 200})
+	// Third item, different path — should not appear in alternatives for /dup.mkv.
+	s.UpsertFile(FileRecord{ItemID: 30, FileID: 1, Source: SourceTorrent, Name: "other.mkv", Path: "/other.mkv", Size: 300})
+
+	alternatives, err := s.GetFileAlternatives("/dup.mkv")
+	if err != nil {
+		t.Fatalf("GetFileAlternatives failed: %v", err)
+	}
+	if len(alternatives) != 1 {
+		t.Fatalf("expected 1 alternative, got %d", len(alternatives))
+	}
+	// The alternative should be the first-upserted item (lower internal id).
+	if alternatives[0].ItemID != 10 {
+		t.Errorf("alternative item_id = %d, want 10", alternatives[0].ItemID)
+	}
+}
+
+func TestGetFileAlternativesNoDuplicates(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "unique.mkv", Path: "/unique.mkv", Size: 100})
+
+	alternatives, err := s.GetFileAlternatives("/unique.mkv")
+	if err != nil {
+		t.Fatalf("GetFileAlternatives failed: %v", err)
+	}
+	if len(alternatives) != 0 {
+		t.Fatalf("expected 0 alternatives for unique path, got %d", len(alternatives))
+	}
+}
+
+func TestCountDistinctPaths(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Two items with the same path.
+	s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "a.mkv", Path: "/dup.mkv", Size: 100})
+	s.UpsertFile(FileRecord{ItemID: 2, FileID: 1, Source: SourceTorrent, Name: "a.mkv", Path: "/dup.mkv", Size: 200})
+	// Different path.
+	s.UpsertFile(FileRecord{ItemID: 3, FileID: 1, Source: SourceTorrent, Name: "b.mkv", Path: "/unique.mkv", Size: 300})
+
+	total, err := s.CountFiles()
+	if err != nil {
+		t.Fatalf("CountFiles failed: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("CountFiles = %d, want 3", total)
+	}
+
+	distinct, err := s.CountDistinctPaths()
+	if err != nil {
+		t.Fatalf("CountDistinctPaths failed: %v", err)
+	}
+	if distinct != 2 {
+		t.Errorf("CountDistinctPaths = %d, want 2", distinct)
+	}
+}
+
+func TestListDirDedup(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Two items with the same file path.
+	s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/dir/f.mkv", Size: 100})
+	s.UpsertFile(FileRecord{ItemID: 2, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/dir/f.mkv", Size: 200})
+	// A different file in the same dir.
+	s.UpsertFile(FileRecord{ItemID: 3, FileID: 1, Source: SourceTorrent, Name: "g.mkv", Path: "/dir/g.mkv", Size: 300})
+
+	files, err := s.ListDir("/dir/")
+	if err != nil {
+		t.Fatalf("ListDir failed: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files in /dir/ (deduped), got %d", len(files))
+	}
+
+	// The primary (highest id) for f.mkv should be item_id=2.
+	for _, f := range files {
+		if f.Name == "f.mkv" && f.ItemID != 2 {
+			t.Errorf("f.mkv item_id = %d, want 2 (primary should be highest id)", f.ItemID)
+		}
+	}
+}
+
+func TestGetFileByPathReturnsPrimary(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Two items, same path. Primary should be the second (highest id).
+	s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/f.mkv", Size: 100})
+	s.UpsertFile(FileRecord{ItemID: 2, FileID: 1, Source: SourceTorrent, Name: "f.mkv", Path: "/f.mkv", Size: 200})
+
+	f, err := s.GetFileByPath("/f.mkv")
+	if err != nil {
+		t.Fatalf("GetFileByPath failed: %v", err)
+	}
+	if f == nil {
+		t.Fatal("GetFileByPath returned nil")
+	}
+	if f.ItemID != 2 {
+		t.Errorf("primary item_id = %d, want 2", f.ItemID)
+	}
+}
+
+func TestMigrateAutoRecreatesV1DB(t *testing.T) {
+	// Create a v1-schema database file and verify Open() auto-recreates it to v2.
+	path := t.TempDir() + "/test_v1.db"
+
+	v1Schema := `
+	CREATE TABLE IF NOT EXISTS files (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id         INTEGER NOT NULL DEFAULT 0,
+		file_id         INTEGER NOT NULL DEFAULT 0,
+		source          INTEGER NOT NULL DEFAULT 0,
+		name            TEXT    NOT NULL,
+		path            TEXT    NOT NULL UNIQUE,
+		size            INTEGER NOT NULL DEFAULT 0,
+		mime_type       TEXT    NOT NULL DEFAULT '',
+		cdn_url         TEXT    NOT NULL DEFAULT '',
+		cdn_url_expires TEXT    NOT NULL DEFAULT '',
+		created_at      TEXT    NOT NULL DEFAULT '',
+		sync_tag        INTEGER NOT NULL DEFAULT 0,
+		updated         TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+	CREATE INDEX IF NOT EXISTS idx_files_source_file_id ON files(source, file_id);
+	CREATE INDEX IF NOT EXISTS idx_files_sync_tag ON files(sync_tag);
+	CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+	`
+	rawDB, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("opening raw v1 db: %v", err)
+	}
+	if _, err := rawDB.Exec(v1Schema); err != nil {
+		t.Fatalf("creating v1 schema: %v", err)
+	}
+	// Verify v1 schema was created correctly.
+	var createSQL string
+	if err := rawDB.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
+		t.Fatalf("reading v1 schema: %v", err)
+	}
+	if !strings.Contains(createSQL, "UNIQUE") {
+		t.Fatal("v1 db should have a UNIQUE constraint")
+	}
+	rawDB.Close()
+
+	// Now open with the new code — migrate() should detect v1 and auto-recreate.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on v1 db failed (should auto-recreate): %v", err)
+	}
+	defer s.Close()
+
+	// Verify the DB was recreated with v2 schema.
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
+		t.Fatalf("reading v2 schema: %v", err)
+	}
+	if !strings.Contains(createSQL, "UNIQUE(source, item_id, file_id)") {
+		t.Fatal("recreated db should have v2 unique constraint")
+	}
+
+	// Verify PRAGMA user_version was set.
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("reading user_version: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
+	}
+
+	// Verify upserts work with the new schema.
+	if err := s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "test.mkv", Path: "/test.mkv", Size: 100}); err != nil {
+		t.Fatalf("UpsertFile on migrated db failed: %v", err)
+	}
+	f, err := s.GetFileByPath("/test.mkv")
+	if err != nil || f == nil || f.ItemID != 1 {
+		t.Fatal("migrated db should allow upserts and lookups")
 	}
 }
