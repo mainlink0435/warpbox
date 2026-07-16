@@ -5,6 +5,11 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.3] - 2026-07-17
+
+### Added
+- Per–virtual-path `min_file_size` and `max_file_size` config options to filter files by byte range (e.g. `1.5GB` for movies, `300MB` for TV). Bounds apply after name/regex filters and before `largest_file_only`. Empty = no limit. (thanks @Allifreyr)
+
 ## [v0.7.2] - 2026-07-16
 
 ### Fixed
@@ -119,7 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.2...HEAD
+[Unreleased]: /compare/v0.7.3...HEAD
+[v0.7.3]: /compare/v0.7.2...v0.7.3
 [v0.7.2]: /compare/v0.7.1...v0.7.2
 [v0.7.1]: /compare/v0.7.0...v0.7.1
 [v0.7.0]: /compare/v0.6.0...v0.7.0
