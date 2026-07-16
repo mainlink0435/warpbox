@@ -604,7 +604,7 @@ func isCDNDisguisedErrorBody(contentType string) bool {
 
 // cdnPollInterval is how long to wait between CDN URL fetch attempts when
 // the CDN is unavailable and we are hanging the connection open.
-const cdnPollInterval = 15 * time.Second
+var cdnPollInterval = 15 * time.Second
 
 // handleGetCDNHang is entered when the CDN URL cannot be fetched and we want
 // to avoid returning an error (which rclone counts toward maxErrorCount=10).
