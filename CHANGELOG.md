@@ -5,6 +5,13 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Percent-encoding in WebDAV hrefs for filenames containing a literal `%` (e.g. `30% Iron Chef`) — rclone no longer fails with `invalid URL escape` thanks to per-segment percent-encoded D:href values (thanks @Allifreyr)
+- CDN connection semaphore now acquired before the upstream request — `max_cdn_connections` correctly limits concurrent TorBox CDN opens (thanks @Allifreyr)
+- Hang/poll mode now retries on transient CDN data errors (429/5xx/disguised text body) instead of streaming error pages as file content into rclone's VFS cache (thanks @Allifreyr)
+
 ## [v0.7.0] - 2026-07-09
 
 ### Added

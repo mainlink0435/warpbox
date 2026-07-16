@@ -9,12 +9,36 @@ import (
 	"encoding/xml"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/mainlink0435/warpbox/internal/library"
 )
+
+// encodeDAVHref percent-encodes each segment of an absolute path so it is a
+// valid URI-reference for WebDAV D:href (and HTTP browser links). Slash
+// separators are preserved; a trailing slash is kept. Stored SQLite paths and
+// display names remain unencoded — this is only for wire format.
+//
+// Without this, literal '%' in titles (e.g. "30% Iron Chef") produces invalid
+// URL escapes that break rclone ("invalid URL escape \"% o\"").
+func encodeDAVHref(p string) string {
+	if p == "" {
+		return p
+	}
+	trailing := strings.HasSuffix(p, "/")
+	parts := strings.Split(p, "/")
+	for i, seg := range parts {
+		parts[i] = url.PathEscape(seg)
+	}
+	out := strings.Join(parts, "/")
+	if trailing && !strings.HasSuffix(out, "/") {
+		out += "/"
+	}
+	return out
+}
 
 // formatLastModified parses an ISO 8601 timestamp (like TorBox API's created_at)
 // and returns an RFC 1123-formatted string suitable for WebDAV getlastmodified.
@@ -206,6 +230,8 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 }
 
 // appendResponse creates a WebDAV response entry and appends it to the slice.
+// href is the unencoded virtual path used for display-name derivation and
+// deduplication; the emitted D:href is percent-encoded per segment.
 func appendResponse(responses []response, href string, isDir bool, size int64, name, mimeType, createdAt string, seen *map[string]bool) []response {
 	if (*seen)[href] {
 		return responses
@@ -229,7 +255,7 @@ func appendResponse(responses []response, href string, isDir bool, size int64, n
 	}
 
 	return append(responses, response{
-		Href: href,
+		Href: encodeDAVHref(href),
 		PropStat: propstat{
 			Prop:   p,
 			Status: "HTTP/1.1 200 OK",

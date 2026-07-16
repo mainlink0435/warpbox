@@ -287,6 +287,38 @@ func TestHTTPBrowser_SortByTypeReverse(t *testing.T) {
 	}
 }
 
+func TestHTTPBrowser_PercentInFilenameHref(t *testing.T) {
+	store, err := metadata.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	name := "30% Iron Chef.mkv"
+	if err := store.UpsertFile(metadata.FileRecord{
+		ItemID: 1, Source: metadata.SourceTorrent, Name: name,
+		Path: "Futurama/" + name, Size: 100, MimeType: "video/x-matroska", FileID: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(Config{Version: "test"}, store, nil, nil)
+
+	r := httptest.NewRequest(http.MethodGet, "/http/Futurama/", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, r)
+	body := w.Body.String()
+
+	// Link target must percent-encode '%' so browsers/rclone can parse it.
+	if !strings.Contains(body, `href="/http/Futurama/30%25%20Iron%20Chef.mkv"`) {
+		t.Errorf("expected encoded file href, body:\n%s", body)
+	}
+	// Visible label keeps the real title.
+	if !strings.Contains(body, name) {
+		t.Errorf("expected display name with literal %%, body:\n%s", body)
+	}
+}
+
 func TestHTTPBrowser_VirtualPathHrefs(t *testing.T) {
 	store, err := metadata.Open(":memory:")
 	if err != nil {

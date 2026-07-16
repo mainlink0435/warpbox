@@ -73,17 +73,17 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		records = hFilter.Apply(records)
 	}
 
-	// Build the breadcrumb trail.
+	// Build the breadcrumb trail (display names stay raw; hrefs are encoded).
 	parts := strings.Split(rawVirtualPath, "/")
 	var breadcrumbs []breadcrumb
-	breadcrumbs = append(breadcrumbs, breadcrumb{Name: "root", Href: "/http/"})
+	breadcrumbs = append(breadcrumbs, breadcrumb{Name: "root", Href: encodeDAVHref("/http/")})
 	accum := ""
 	for _, p := range parts {
 		if p == "" {
 			continue
 		}
 		accum += "/" + p
-		breadcrumbs = append(breadcrumbs, breadcrumb{Name: p, Href: "/http" + accum + "/"})
+		breadcrumbs = append(breadcrumbs, breadcrumb{Name: p, Href: encodeDAVHref("/http" + accum + "/")})
 	}
 
 	// Determine href prefix for virtual mounts.
@@ -134,10 +134,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				filterTotals[i] += rec.Size
 			}
 		}
-		dirs = append(dirs, entry{Name: "__all__/", Href: "/http/__all__/", Size: allTotal, IsDir: true})
+		dirs = append(dirs, entry{Name: "__all__/", Href: encodeDAVHref("/http/__all__/"), Size: allTotal, IsDir: true})
 		for i, vf := range s.virtualFilters {
 			name := strings.TrimPrefix(vf.Mount, "/")
-			dirs = append(dirs, entry{Name: name + "/", Href: "/http/" + name + "/", Size: filterTotals[i], IsDir: true})
+			dirs = append(dirs, entry{Name: name + "/", Href: encodeDAVHref("/http/" + name + "/"), Size: filterTotals[i], IsDir: true})
 		}
 	} else {
 		for _, rec := range records {
@@ -155,9 +155,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if virtualPath == "" {
-				href = "/http" + mountPrefix + "/" + displayName + "/"
+				href = encodeDAVHref("/http" + mountPrefix + "/" + displayName + "/")
 			} else {
-				href = "/http" + mountPrefix + "/" + virtualPath + "/" + displayName + "/"
+				href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + displayName + "/")
 			}
 			dirMap[displayName] = &dirAgg{name: displayName, href: href, totalSize: rec.Size}
 			dirOrder = append(dirOrder, displayName)
@@ -165,9 +165,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			displayName = rel
 			if virtualPath == "" {
-				href = "/http" + mountPrefix + "/" + rel
+				href = encodeDAVHref("/http" + mountPrefix + "/" + rel)
 			} else {
-				href = "/http" + mountPrefix + "/" + virtualPath + "/" + rel
+				href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + rel)
 			}
 		}
 
@@ -175,7 +175,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			if mime == "" {
 				mime = "application/octet-stream"
 			}
-			fileHref := "/http" + mountPrefix + "/" + rec.Path
+			fileHref := encodeDAVHref("/http" + mountPrefix + "/" + rec.Path)
 			files = append(files, entry{
 				Name:   displayName,
 				Href:   fileHref,

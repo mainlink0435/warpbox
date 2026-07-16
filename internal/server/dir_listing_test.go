@@ -254,6 +254,66 @@ func TestServeDirListingNestedPaths(t *testing.T) {
 	}
 }
 
+// TestServeDirListingPercentInFilename ensures files with a literal '%' in the
+// name emit valid percent-encoded D:href values (rclone URL-join fix) while
+// keeping human-readable displaynames and successful GET path lookup.
+func TestServeDirListingPercentInFilename(t *testing.T) {
+	store, err := metadata.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory store: %v", err)
+	}
+	defer store.Close()
+
+	name := "Futurama_S04E11_The 30% Iron Chef.mp4"
+	path := "Futurama.S04/" + name
+	if err := store.UpsertFile(metadata.FileRecord{
+		ItemID: 1, FileID: 10, Source: metadata.SourceTorrent,
+		Name: name, Path: path, Size: 1234, MimeType: "video/mp4",
+	}); err != nil {
+		t.Fatalf("failed to upsert file: %v", err)
+	}
+
+	srv := New(Config{Version: "test"}, store, nil, nil)
+
+	// PROPFIND via GET directory listing.
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Futurama.S04/", nil)
+	w := httptest.NewRecorder()
+	srv.handleGet(w, req)
+	resp := w.Result()
+	body := readAllStr(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("expected 207, got %d", resp.StatusCode)
+	}
+
+	// Wire href must encode '%' as %25 (and space as %20).
+	wantHref := "<D:href>/webdav/Futurama.S04/Futurama_S04E11_The%2030%25%20Iron%20Chef.mp4</D:href>"
+	if !strings.Contains(body, wantHref) {
+		t.Errorf("expected encoded href %s\nbody:\n%s", wantHref, body)
+	}
+	// Must not emit an unencoded href (invalid URL escape for clients like rclone).
+	badHref := "<D:href>/webdav/Futurama.S04/Futurama_S04E11_The 30% Iron Chef.mp4</D:href>"
+	if strings.Contains(body, badHref) {
+		t.Error("must not emit unencoded href with literal %")
+	}
+	// Display name keeps the literal percent for clients/UI.
+	if !strings.Contains(body, "<D:displayname>"+name+"</D:displayname>") {
+		t.Errorf("expected displayname with literal %%: %q", name)
+	}
+
+	// HEAD with a properly encoded URL path: Go decodes to the DB path with a
+	// literal '%'. Must not 404 (lookup works regardless of CDN availability).
+	headReq := httptest.NewRequest(http.MethodHead, "/webdav/Futurama.S04/Futurama_S04E11_The%2030%25%20Iron%20Chef.mp4", nil)
+	headW := httptest.NewRecorder()
+	srv.handleHead(headW, headReq)
+	headResp := headW.Result()
+	headResp.Body.Close()
+	if headResp.StatusCode == http.StatusNotFound {
+		t.Errorf("HEAD encoded path should find file, got %d", headResp.StatusCode)
+	}
+}
+
 func TestServeDirListingGETRootNoSlash(t *testing.T) {
 	store, err := metadata.Open(":memory:")
 	if err != nil {

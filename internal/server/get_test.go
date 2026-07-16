@@ -132,6 +132,25 @@ func TestCdnCacheKeyDifferentiation(t *testing.T) {
 	}
 }
 
+func TestIsCDNDisguisedErrorBody(t *testing.T) {
+	cases := []struct {
+		ct   string
+		want bool
+	}{
+		{"video/mp4", false},
+		{"application/octet-stream", false},
+		{"text/plain", true},
+		{"text/html; charset=utf-8", true},
+		{"application/json", true},
+		{"application/vnd.apple.mpegurl", false},
+	}
+	for _, tc := range cases {
+		if got := isCDNDisguisedErrorBody(tc.ct); got != tc.want {
+			t.Errorf("isCDNDisguisedErrorBody(%q) = %v, want %v", tc.ct, got, tc.want)
+		}
+	}
+}
+
 func TestCDNSemaphoreAcquireRelease(t *testing.T) {
 	s := &Server{
 		cdnSem: make(chan struct{}, 2),

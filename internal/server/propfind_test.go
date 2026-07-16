@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/xml"
+	"net/url"
 	"testing"
 )
 
@@ -99,4 +100,73 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestEncodeDAVHref(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"/webdav/", "/webdav/"},
+		{"/webdav/movie.mkv", "/webdav/movie.mkv"},
+		{"/webdav/Season 10/", "/webdav/Season%2010/"},
+		{
+			"/webdav/tv/Show/30% Iron Chef.mkv",
+			"/webdav/tv/Show/30%25%20Iron%20Chef.mkv",
+		},
+		{
+			"/webdav/Heroes (2006)/.07% (1080p).mkv",
+			"/webdav/Heroes%20%282006%29/.07%25%20%281080p%29.mkv",
+		},
+		{
+			"/webdav/Robot Chicken (2001)/Season 10/",
+			"/webdav/Robot%20Chicken%20%282001%29/Season%2010/",
+		},
+	}
+	for _, tc := range cases {
+		got := encodeDAVHref(tc.in)
+		if got != tc.want {
+			t.Errorf("encodeDAVHref(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		// Encoded form must be parseable as a URL path (the rclone failure mode).
+		if tc.in != "" {
+			if _, err := url.Parse(got); err != nil {
+				t.Errorf("encodeDAVHref(%q) = %q is not a valid URL: %v", tc.in, got, err)
+			}
+		}
+	}
+}
+
+func TestAppendResponseEncodesHrefKeepsDisplayName(t *testing.T) {
+	seen := map[string]bool{}
+	raw := "/webdav/tv/Futurama/30% Iron Chef.mkv"
+	responses := appendResponse(nil, raw, false, 100, "30% Iron Chef.mkv", "video/mp4", "", &seen)
+
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	wantHref := "/webdav/tv/Futurama/30%25%20Iron%20Chef.mkv"
+	if responses[0].Href != wantHref {
+		t.Errorf("Href = %q, want %q", responses[0].Href, wantHref)
+	}
+	if responses[0].PropStat.Prop.DisplayName != "30% Iron Chef.mkv" {
+		t.Errorf("DisplayName = %q, want literal percent", responses[0].PropStat.Prop.DisplayName)
+	}
+
+	// Dedup key is the unencoded path — second append is a no-op.
+	responses = appendResponse(responses, raw, false, 100, "30% Iron Chef.mkv", "video/mp4", "", &seen)
+	if len(responses) != 1 {
+		t.Errorf("dedup by unencoded href failed: got %d responses", len(responses))
+	}
+
+	// Directory display name stays human-readable.
+	seen2 := map[string]bool{}
+	dirRaw := "/webdav/Season 10/"
+	dirResps := appendResponse(nil, dirRaw, true, 0, "", "", "", &seen2)
+	if dirResps[0].Href != "/webdav/Season%2010/" {
+		t.Errorf("dir Href = %q, want encoded", dirResps[0].Href)
+	}
+	if dirResps[0].PropStat.Prop.DisplayName != "Season 10" {
+		t.Errorf("dir DisplayName = %q, want %q", dirResps[0].PropStat.Prop.DisplayName, "Season 10")
+	}
 }
