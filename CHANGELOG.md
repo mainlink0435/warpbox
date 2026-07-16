@@ -5,7 +5,7 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.7.2] - 2026-07-16
 
 ### Fixed
 - Percent-encoding in WebDAV hrefs for filenames containing a literal `%` (e.g. `30% Iron Chef`) — rclone no longer fails with `invalid URL escape` thanks to per-segment percent-encoded D:href values (thanks @Allifreyr)
@@ -119,7 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.0...HEAD
+[Unreleased]: /compare/v0.7.2...HEAD
+[v0.7.2]: /compare/v0.7.1...v0.7.2
+[v0.7.1]: /compare/v0.7.0...v0.7.1
 [v0.7.0]: /compare/v0.6.0...v0.7.0
 [v0.6.0]: /compare/v0.5.4...v0.6.0
 
