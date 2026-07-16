@@ -128,10 +128,16 @@ library:
       directory_exclude: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
+      # Optional per-view size bounds (binary units: 1MB = 1024²). Applies
+      # after file_regex, before largest_file_only. Empty = no limit.
+      # min_file_size: 1.5GB
+      # max_file_size: 12GB
     - name: tv
       directory_include: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
+      # min_file_size: 300MB
+      # max_file_size: 6GB
 
   # Shell command to run when items are added to the library (after sync).
   # Receives item directory names as positional arguments.

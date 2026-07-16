@@ -792,3 +792,69 @@ func TestUpdateLogLevelBadPath(t *testing.T) {
 		t.Fatal("expected error for bad path, got nil")
 	}
 }
+
+func TestLoadLibraryFileSizeBounds(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      file_regex: ".*\\.mkv$"
+      min_file_size: 300MB
+      max_file_size: 10GB
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Library.VirtualPaths[0].MinFileSize != "300MB" {
+		t.Errorf("min_file_size = %q", cfg.Library.VirtualPaths[0].MinFileSize)
+	}
+	if cfg.Library.VirtualPaths[0].MaxFileSize != "10GB" {
+		t.Errorf("max_file_size = %q", cfg.Library.VirtualPaths[0].MaxFileSize)
+	}
+}
+
+func TestLoadLibraryMinGreaterThanMax(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      min_file_size: 10GB
+      max_file_size: 1GB
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error when min_file_size > max_file_size")
+	}
+}
+
+func TestLoadLibraryInvalidFileSize(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      min_file_size: "not-a-size"
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for invalid min_file_size")
+	}
+}

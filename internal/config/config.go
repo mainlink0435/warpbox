@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mainlink0435/warpbox/internal/library"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,6 +86,10 @@ type VirtualPathConfig struct {
 	DirectoryExclude string `yaml:"directory_exclude"`  // Exclude dirs matching this regex
 	FileRegex        string `yaml:"file_regex"`         // Regex applied to file paths within torrents
 	LargestFileOnly  bool   `yaml:"largest_file_only"`  // Show only the largest file per torrent
+	// Optional size bounds for files in this virtual view (human-readable,
+	// e.g. "300MB", "10GB"). Empty = no bound. Binary units (1024).
+	MinFileSize string `yaml:"min_file_size"`
+	MaxFileSize string `yaml:"max_file_size"`
 }
 
 // LibraryConfig holds settings for the virtual library feature.
@@ -362,6 +367,19 @@ func validateLibrary(l *LibraryConfig) error {
 			if _, err := regexp.Compile(vp.FileRegex); err != nil {
 				return fmt.Errorf("library.virtual_paths[%d].file_regex: %w", i, err)
 			}
+		}
+
+		minSize, err := library.ParseFileSize(vp.MinFileSize)
+		if err != nil {
+			return fmt.Errorf("library.virtual_paths[%d].min_file_size: %w", i, err)
+		}
+		maxSize, err := library.ParseFileSize(vp.MaxFileSize)
+		if err != nil {
+			return fmt.Errorf("library.virtual_paths[%d].max_file_size: %w", i, err)
+		}
+		if minSize > 0 && maxSize > 0 && minSize > maxSize {
+			return fmt.Errorf("library.virtual_paths[%d]: min_file_size (%s) must be <= max_file_size (%s)",
+				i, vp.MinFileSize, vp.MaxFileSize)
 		}
 	}
 	if l.HookTimeoutSec < 1 || l.HookTimeoutSec > 3600 {

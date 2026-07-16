@@ -306,3 +306,63 @@ func TestApplyFilter_LargestFileOnly(t *testing.T) {
 		t.Errorf("expected largest (5000), got %d", got[0].Size)
 	}
 }
+
+func TestMatchSize(t *testing.T) {
+	f := &Filter{MinSize: 100, MaxSize: 1000}
+	if !f.MatchSize(100) || !f.MatchSize(500) || !f.MatchSize(1000) {
+		t.Error("sizes in range should match")
+	}
+	if f.MatchSize(99) || f.MatchSize(1001) {
+		t.Error("sizes out of range should not match")
+	}
+	// Zero bounds = unlimited.
+	open := &Filter{}
+	if !open.MatchSize(0) || !open.MatchSize(1<<40) {
+		t.Error("zero min/max should accept any size")
+	}
+}
+
+func TestApplyFilter_MinMaxFileSize(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+	f.MinSize = 300
+	f.MaxSize = 5000
+
+	records := []metadata.FileRecord{
+		{ItemID: 1, Path: "A/sample.mkv", Size: 50},
+		{ItemID: 2, Path: "B/main.mkv", Size: 1000},
+		{ItemID: 3, Path: "C/remux.mkv", Size: 9000},
+		{ItemID: 4, Path: "D/ok.mkv", Size: 5000},
+	}
+	got := f.Apply(records)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records in range, got %d", len(got))
+	}
+	if got[0].ItemID != 2 || got[1].ItemID != 4 {
+		t.Errorf("unexpected items: %+v", got)
+	}
+}
+
+func TestApplyFilter_SizeThenLargest(t *testing.T) {
+	// Sample under min is dropped before largest_file_only picks a winner.
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+	f.MinSize = 400
+
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/sample.mkv", Size: 100},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/feature.mkv", Size: 2000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/extra.mkv", Size: 500},
+	}
+	got := f.Apply(records)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(got))
+	}
+	if got[0].Size != 2000 {
+		t.Errorf("expected feature (2000) after size filter + largest, got %d", got[0].Size)
+	}
+}

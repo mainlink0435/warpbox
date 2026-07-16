@@ -217,6 +217,17 @@ func buildFilters(vps []config.VirtualPathConfig) ([]*library.Filter, error) {
 		if err != nil {
 			return nil, fmt.Errorf("building filter for %q: %w", vp.Name, err)
 		}
+		// Size bounds validated at config load; re-parse for filter (0 = unlimited).
+		minSize, err := library.ParseFileSize(vp.MinFileSize)
+		if err != nil {
+			return nil, fmt.Errorf("building filter for %q: min_file_size: %w", vp.Name, err)
+		}
+		maxSize, err := library.ParseFileSize(vp.MaxFileSize)
+		if err != nil {
+			return nil, fmt.Errorf("building filter for %q: max_file_size: %w", vp.Name, err)
+		}
+		f.MinSize = minSize
+		f.MaxSize = maxSize
 		filters = append(filters, f)
 	}
 	return filters, nil

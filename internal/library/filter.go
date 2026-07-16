@@ -8,11 +8,15 @@ import (
 )
 
 type Filter struct {
-	Mount             string
-	DirectoryInclude  *regexp.Regexp
-	DirectoryExclude  *regexp.Regexp
-	FileRegex         *regexp.Regexp
-	LargestFileOnly   bool
+	Mount            string
+	DirectoryInclude *regexp.Regexp
+	DirectoryExclude *regexp.Regexp
+	FileRegex        *regexp.Regexp
+	LargestFileOnly  bool
+	// MinSize / MaxSize are byte bounds applied after name filters.
+	// Zero means no bound (unlimited).
+	MinSize int64
+	MaxSize int64
 }
 
 func NewFilter(mount, dirInclude, dirExclude, fileRegex string, largestFileOnly bool) (*Filter, error) {
@@ -72,6 +76,18 @@ func (f *Filter) MatchFile(relPath string) bool {
 	return f.FileRegex.MatchString(relPath)
 }
 
+// MatchSize reports whether size (bytes) is within configured min/max bounds.
+// A zero MinSize or MaxSize means that bound is not applied.
+func (f *Filter) MatchSize(size int64) bool {
+	if f.MinSize > 0 && size < f.MinSize {
+		return false
+	}
+	if f.MaxSize > 0 && size > f.MaxSize {
+		return false
+	}
+	return true
+}
+
 func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 	dirMatchCache := make(map[string]bool, len(records)/2)
 	result := make([]metadata.FileRecord, 0, len(records))
@@ -88,6 +104,10 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 		}
 		rel := ExtractRelativePath(rec.Path)
 		if !f.MatchFile(rel) {
+			continue
+		}
+		// Size bounds before largest_file_only so samples under min drop first.
+		if !f.MatchSize(rec.Size) {
 			continue
 		}
 		result = append(result, rec)
