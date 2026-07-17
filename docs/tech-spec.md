@@ -49,19 +49,19 @@ If you change the code, update this spec.
    - Auto-runs schema migrations (`CREATE TABLE IF NOT EXISTS`)
    - `defer metadataStore.Close()` — closed on process exit
 
-10. **Throttle queue.** `throttle.NewQueue(cfg.Throttle.RequestsPerMinute)`:
+10. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
+
+11. **Throttle queue.** `throttle.NewQueue(cfg.Throttle.RequestsPerMinute)`:
     - Computes inter-request spacing: `rate = time.Minute / RPM`
     - Creates buffered channel (capacity 1024)
-    - `queue.Start(ctx)` — launches the `processLoop` goroutine
+    - `queue.Start(ctx)` — launches the `processLoop` goroutine using the signal context
 
-11. **TorBox API client.** `torbox.NewClient(cfg.TorBox.APIKey)`:
+12. **TorBox API client.** `torbox.NewClient(cfg.TorBox.APIKey)`:
     - Hardcoded base URL: `"https://api.torbox.app"`
     - HTTP client with 30-second timeout
     - Wires `HTTP429Callback`: `func() { throttleQueue.Record429() }` — called when the TorBox API returns HTTP 429
 
-12. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
-
-13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, retryAttempts, retryBackoff)`:
+13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff)`:
     - Stores references to the metadata store, TorBox client, throttle queue, interval, and limit
     - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)` when configured
     - `go syncWorker.Start(ctx)` — runs the periodic sync loop in a background goroutine
@@ -75,7 +75,7 @@ If you change the code, update this spec.
     - **Cache:** `CDNTtlMinutes`, `CDNURLAutoRepair`, `CDNURLRepairRetries`, `CDNURLRetryBackoff`, `CDNURLRetryCount`, `NegativeCacheTTLSeconds`, `CircuitBreakerFailures`, `CircuitBreakerWindowSec`, `CircuitBreakerStaleMin`, `NegativeCacheMaxEntries`, `CircuitBreakerMaxEntries`, `CleanupIntervalSeconds`, `MaxCDNConnections`
     - **Throttle:** `RequestsPerMinute` (for landing page display)
     - **Logging:** `LogFormat`, `LogLevel`, `LevelVar` (shared pointer for runtime switching)
-    - **Sync:** `SyncIntervalMinute`, `SyncLimit` (for landing page display)
+    - **Sync:** `SyncIntervalMinute`, `SyncListPageSize` (for landing page display)
     - **Stats:** `StatsIntervalSeconds`, `StatsRetentionHours`, `StatsChartMinutes`
     - **Auth:** `AuthEnabled`, `AuthUsername`, `AuthPassword`
     - **Library:** `VirtualPaths`
@@ -171,7 +171,17 @@ Because chi uses `Handle` (not per-method routing) for the WebDAV paths, all met
 
 ### Virtual Path Filtering
 
-The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, plus a `largest_file_only` option. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
+The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, optional `min_file_size`/`max_file_size` byte bounds (human-readable strings parsed via `library.ParseFileSize`, 0 = unlimited), plus a `largest_file_only` option. Filter ordering is: directory regex → file regex → size bounds → largest file selection. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
+
+### WebDAV D:href Encoding (`encodeDAVHref`)
+
+All PROPFIND `D:href` values and HTTP browser link hrefs are percent-encoded
+per segment by `encodeDAVHref()`, which splits the path on `/`, applies
+`url.PathEscape` to each segment, then joins. This produces valid URI-references
+(e.g. a file named `30% Iron Chef.mkv` is emitted as
+`/webdav/tv/30%25%20Iron%20Chef.mkv`). Without this encoding, `%` in filenames
+caused rclone to fail with `invalid URL escape`. Stored paths and display names
+remain unencoded.
 
 ### OpenAPI Spec
 
@@ -284,7 +294,7 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
      a transient error: invalidate the cached CDN URL and enter hang/poll mode.
    - **200/206 (binary):** Proceed to streaming
 
-5. **CDN connection semaphore.** Before proxy streaming, `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when done. Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
+5. **CDN connection semaphore.** Before the upstream CDN request (`client.Do`), `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot on every exit path (network error, stale URL retry, transient CDN error, disguised text body, or after streaming completes). Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
 
 6. **Streaming.** Set response headers:
    - `Content-Type`: from file's MIME type, or `"application/octet-stream"`
@@ -299,20 +309,32 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
 
 ### Hang/Poll Mode (`handleGetCDNHang`)
 
-Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) or the CDN returns transient errors (429/5xx). The goal is to avoid returning an error to rclone, which counts errors toward `maxErrorCount=10`:
+Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) or the CDN returns transient errors (429/5xx / disguised text body). The goal is to avoid returning an error to rclone, which counts errors toward `maxErrorCount=10`:
 
 1. **Immediate success headers.** Send `200 OK` or `206 Partial Content` with full response headers (Content-Type, Content-Length, Accept-Ranges, Content-Range) BEFORE any data is available. This makes rclone think the connection succeeded (it will wait for data).
 
-2. **Poll loop with 429 backoff.** Starts at `cdnPollInterval` (15s). If
+2. **URL fetch with 429 backoff.** Starts at `cdnPollInterval` (15s). If
    `fetchCDNURL()` returns a 429 (per-item `requestdl` rate limit), the poll
    interval doubles exponentially (30s → 60s → 2min → 5min max). Non-429
-   failures keep the current interval. Uses `time.After(interval)` instead of
-   a fixed ticker:
-   - URL recovered → cache it, proxy data from CDN, exit
+   failures keep the current interval. Uses `time.After(interval)`:
+   - URL recovered → proceed to data proxy
    - Still unavailable → `select { case <-r.Context().Done(): cleanup and return | case <-time.After(interval): continue }`
    - Client disconnect → clean exit (context cancelled), logged at DEBUG
 
-3. **Data proxy after recovery.** Acquire CDN connection slot, proxy GET with content range, `io.Copy` to client.
+3. **Data proxy with retry.** Acquire CDN connection slot (before the upstream
+   request, matching `streamFileContent`), proxy GET with content range. On
+   transient data errors (429, 5xx, or binary‑stream response with a text/html/
+   json Content-Type via `isCDNDisguisedErrorBody`):
+   - Close the error response body
+   - Release the CDN slot
+   - Invalidate the cached CDN URL
+   - Double the poll interval (same exponential backoff, 15s → 5min max)
+   - `select { case <-r.Context().Done(): return | case <-time.After(interval): continue }`
+   - Loop back to step 2 to re-fetch a fresh CDN URL
+   This prevents transient CDN data errors from escalating into permanent file
+   corruption via cached error pages in rclone's VFS cache.
+
+4. **Data success.** On 200/206 binary response: `defer ReleaseCDNConn()`, `io.Copy` to client, exit.
 
 ### Byte-Range Parsing (`parseRange`)
 
@@ -386,14 +408,14 @@ worker to decide whether to retry a failed API call.
 
 ### List Endpoints
 
-Both `ListTorrents` and `ListUsenet` use `listGeneric[T]` which paginates
+Both `ListTorrents` and `ListUsenet` use `listGeneric` which paginates
 through TorBox's API with an offset loop (page size controlled by
 `sync.list_page_size`, default 5000). TorBox caps each response at ~10,000
 items regardless of the requested `limit`, so pagination prevents silent
 data loss on large accounts.
 
 ```go
-func (c *Client) listGeneric(ctx, endpoint, label, params) ([]Torrent, error)
+func (c *Client) listGeneric(ctx, endpoint, label string, params ListFilesParams) ([]Torrent, error)
 ```
 
 - Builds URL with `bypass_cache`, `offset`, `limit` query parameters.
@@ -532,7 +554,7 @@ sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000&_cache_size=-819
 - **Busy timeout:** 5000ms (5 seconds) — SQLite will retry locked statements for up to 5 seconds before returning an error.
 - **Cache size:** -8192 pages → 8 MB page cache (negative means kilobytes).
 
-### Schema (v0 — applied via `CREATE IF NOT EXISTS`)
+### Schema (current version: v2 — applied via `CREATE IF NOT EXISTS`)
 
 ```sql
 CREATE TABLE IF NOT EXISTS files (
@@ -541,14 +563,15 @@ CREATE TABLE IF NOT EXISTS files (
     file_id         INTEGER NOT NULL DEFAULT 0,
     source          INTEGER NOT NULL DEFAULT 0,  -- 0=torrent, 1=usenet
     name            TEXT    NOT NULL,
-    path            TEXT    NOT NULL UNIQUE,       -- virtual path, derived from s3_path
+    path            TEXT    NOT NULL,              -- virtual path, derived from s3_path (NOT UNIQUE — v1 was UNIQUE)
     size            INTEGER NOT NULL DEFAULT 0,
     mime_type       TEXT    NOT NULL DEFAULT '',
     cdn_url         TEXT    NOT NULL DEFAULT '',
-    cdn_url_expires TEXT    NOT NULL DEFAULT '',  -- RFC 3339 UTC timestamp
+    cdn_url_expires TEXT    NOT NULL DEFAULT '',   -- RFC 3339 UTC timestamp
     created_at      TEXT    NOT NULL DEFAULT '',
-    sync_tag        INTEGER NOT NULL DEFAULT 0,   -- sync batch ID; 0 = legacy
-    updated         TEXT    NOT NULL DEFAULT (datetime('now'))
+    sync_tag        INTEGER NOT NULL DEFAULT 0,    -- sync batch ID; 0 = legacy
+    updated         TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source, item_id, file_id)               -- v2: duplicate paths allowed; keyed by TorBox's natural ID
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
@@ -571,20 +594,23 @@ CREATE INDEX IF NOT EXISTS idx_stats_metric_time ON stats(metric, timestamp);
 
 ### Migration Strategy
 
-`CREATE TABLE IF NOT EXISTS` — migrations are additive only. There are no versioned migrations, downgrade paths, or schema version tracking. Schema changes must be backward-compatible (add tables, add optional columns). The `meta` table stores key-value pairs for operational state (currently only `sync_tag` counter).
+SQLite schemas are versioned via `PRAGMA user_version`. On startup, `migrate()` inspects the files table's `CREATE TABLE` text from `sqlite_master` for markers like `UNIQUE(source, item_id, file_id)` (v2). If a marker is missing, the database file (including WAL/SHM artifacts) is deleted and recreated with the current schema. Since the database is a cache derived from the TorBox API, this is safe — it self-heals during the next sync cycle. The `meta` table stores key-value pairs for operational state (currently only `sync_tag` counter).
 
 ### Store API
 
 | Method | Primary SQL | Notes |
 |--------|-------------|-------|
-| `UpsertFile(f)` | `INSERT ... ON CONFLICT(path) DO UPDATE SET item_id=excluded.item_id, ... all fields, sync_tag=excluded.sync_tag, updated=datetime('now')` | ON CONFLICT uses the `path` UNIQUE constraint. Updates all fields including CDN URL cache. |
-| `ListDir(prefix)` | `SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at FROM files WHERE path LIKE prefix||'%' ORDER BY name` | Returns all files under a virtual directory prefix. |
-| `GetFileByPath(path)` | `SELECT ... FROM files WHERE path = ?` | Returns `*FileRecord` or `nil` on `sql.ErrNoRows`. |
+| `UpsertFile(f)` | `INSERT ... ON CONFLICT(source, item_id, file_id) DO UPDATE SET name=excluded.name, path=excluded.path, ...` | ON CONFLICT uses the `(source, item_id, file_id)` unique constraint (v2 schema). Updates all metadata fields. |
+| `ListDir(prefix)` | `SELECT ... FROM files WHERE path LIKE ? AND id IN (SELECT MAX(id) FROM files WHERE path LIKE ? GROUP BY path)` | Deduplicates by virtual path: when multiple TorBox items share a path, the highest-ID record (last upserted) wins. |
+| `GetFileByPath(path)` | `SELECT ... FROM files WHERE path = ? ORDER BY id DESC LIMIT 1` | Returns `*FileRecord` at path, preferring the most recently upserted row when duplicates exist. |
 | `GetFileByFileID(source, fileID)` | `SELECT ... FROM files WHERE source = ? AND file_id = ? LIMIT 1` | For CDN URL lookups when path-based lookup is not available. |
 | `SetCDNURL(internalID, url, expiresAt)` | `UPDATE files SET cdn_url=?, cdn_url_expires=?, updated=datetime('now') WHERE id=?` | Retries up to 3 times with exponential backoff (100ms, 200ms, 400ms) if the database is locked. Increments `dbLockErrors` counter on lock failures. |
 | `GetCDNURL(internalID)` | `SELECT cdn_url, cdn_url_expires FROM files WHERE id = ?` | Returns `""` if: row not found, url is empty, or expiry time is in the past (RFC 3339 UTC comparison). |
 | `ListItemDirs()` | `SELECT DISTINCT item_id, source, CASE WHEN instr(path,'/')>0 THEN substr(...) ELSE path END FROM files` | Returns all distinct top-level directories for change detection. |
-| `CountFiles()` | `SELECT COUNT(*) FROM files` | Landing page display. |
+| `CountFiles()` | `SELECT COUNT(*) FROM files` | Landing page display (total rows). |
+| `CountDistinctPaths()` | `SELECT COUNT(DISTINCT path) FROM files` | Landing page display (unique virtual paths). |
+| `CountItems()` | `SELECT COUNT(*) FROM (SELECT DISTINCT item_id, source FROM files)` | Distinct TorBox items (torrents/usenet). |
+| `GetFileAlternatives(path)` | `SELECT ... FROM files WHERE path = ? AND id != (SELECT MAX(id) FROM files WHERE path = ?)` | Returns non-primary rows for CDN URL fallback when the primary item's requestdl fails. |
 | `GetItemIDByFileID(source, fileID)` | `SELECT item_id FROM files WHERE source=? AND file_id=? LIMIT 1` | Maps file → parent item for CDN URL generation. |
 | `GetNextSyncTag()` | `INSERT OR IGNORE INTO meta(key,value) VALUES('sync_tag','0'); UPDATE meta SET value=CAST(value AS INTEGER)+1 RETURNING CAST(value AS INTEGER)` | Atomic counter increment using SQLite's `RETURNING` clause (requires SQLite 3.35+). |
 | `PruneBySyncTag(tag)` | `DELETE FROM files WHERE id IN (SELECT id FROM files WHERE sync_tag != ? OR sync_tag = 0 LIMIT 250)` | Batched 250 rows at a time. Returns total rows deleted across all batches. Refuses to run with tag <= 0. |
@@ -685,8 +711,8 @@ This means charts show call rate per interval, not monotonically increasing tota
 ### JSON Stats Endpoint (`/stats.json`)
 
 - **Auth required** (see Section 9).
-- Accepts optional `?minutes=N` query parameter (default from `stats.chart_minutes`, default 60).
-- Calls `QueryAllStatsSince(now - minutes)` and groups by metric.
+- Uses `stats.chart_minutes` config value (default 60) for the time window.
+- Calls `QueryAllStatsSince(now - chartMinutes)` and groups by metric.
 - Returns `map[string][]{t: "RFC3339 UTC", v: number}`:
 ```json
 {
@@ -724,16 +750,20 @@ The cleanup goroutine is started in `server.New()` and runs until `cleanupStopCh
 
 ```go
 func (s *Server) startCleanupLoop() {
-    interval := time.Duration(s.cfg.CleanupIntervalSeconds) * time.Second
+    cleanupInterval := time.Duration(s.cfg.CleanupIntervalSeconds) * time.Second
+    statsInterval := time.Duration(s.cfg.StatsIntervalSeconds) * time.Second
     go func() {
-        ticker := time.NewTicker(interval)
+        cleanupTick := time.NewTicker(cleanupInterval)
+        statsTick := time.NewTicker(statsInterval)
+        defer cleanupTick.Stop()
+        defer statsTick.Stop()
         for {
             select {
-            case <-ticker.C:
+            case <-cleanupTick.C:
                 s.sweepNegativeCache()
                 s.sweepCircuitBreaker()
+            case <-statsTick.C:
                 s.recordStats()
-                // Prune stats if retention is configured
                 if s.statsRetention > 0 {
                     s.store.PruneStats(s.statsRetention)
                 }
@@ -800,6 +830,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 |-----|------|---------|------------|-------------|
 | `interval_minutes` | int | `5` | 1–1440 | Metadata sync interval |
 | `list_page_size` | int | `5000` | 1–10000 | Per-request page window when paginating mylist API calls |
+| `bypass_cache` | bool | `false` | — | Bypass TorBox API cache when fetching torrent list; forces fresh metadata |
 | `retry_attempts` | int (pointer) | `3` | 0–10 | Max sync API retry attempts on transient errors (0 = no retry) |
 | `retry_backoff` | int (pointer) | `1` | 1–60 | Sync retry exponential backoff base (seconds) |
 
@@ -826,13 +857,15 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | `hook_timeout_seconds` | int | `30` | 1–3600 | Hook execution timeout |
 
 Each virtual path entry:
-| Key | Type | Validation |
-|-----|------|------------|
-| `name` | string | Required, no `/`, unique (the reserved name `__all__` is silently accepted but filtered out at runtime) |
-| `directory_include` | string | Must compile as regex |
-| `directory_exclude` | string | Must compile as regex |
-| `file_regex` | string | Must compile as regex |
-| `largest_file_only` | bool | — |
+| Key | Type | Validation | Description |
+|-----|------|------------|-------------|
+| `name` | string | Required, no `/`, unique | Virtual directory name (reserved name `__all__` silently accepted but filtered out at runtime) |
+| `directory_include` | string | Must compile as regex | Include only dirs matching this regex |
+| `directory_exclude` | string | Must compile as regex | Exclude dirs matching this regex |
+| `file_regex` | string | Must compile as regex | Only files matching this regex appear |
+| `min_file_size` | string | Parsed by `library.ParseFileSize`; `min ≤ max` when both set | Optional — human-readable size (e.g. `300MB`, `1.5GB`); empty = no minimum; binary units (1024) |
+| `max_file_size` | string | Parsed by `library.ParseFileSize`; `min ≤ max` when both set | Optional — human-readable size (e.g. `10GB`); empty = no maximum; binary units (1024) |
+| `largest_file_only` | bool | — | Show only the largest file per torrent after all other filters |
 
 ### Pointer-to-Int Pattern
 

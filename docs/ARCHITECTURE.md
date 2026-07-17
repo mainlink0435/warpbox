@@ -24,6 +24,41 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
   - **Schema upgrades:** The database is a cache derived from the TorBox API. v1→v2 upgrades recreate the database file automatically (one-way; downgrading requires deleting `warpbox.db` and re-syncing).
 - **Ephemeral State (Data):** CDN proxy passthrough. No intermediate memory buffering — all data streams directly through the CDN proxy from TorBox's origin servers to the client. The proxy handles concurrent connections via a semaphore-controlled pool (configurable via `max_cdn_connections`).
 
+## Additional Endpoints
+
+Beyond the core WebDAV proxy, warpbox serves several management and observability endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/webdav/` + `/webdav/*` | Primary WebDAV mount point (PROPFIND, GET, HEAD, OPTIONS). No auth. |
+| `/infuse/` + `/infuse/*` | Infuse-compatible alias — rewrites `/infuse` → `/webdav` internally. No auth. |
+| `/http/` + `/http/*` | HTML directory listing with sortable columns, plus CDN file streaming. Auth required. |
+| `/logs/` | Ring-buffer log viewer (last 1000 lines). Auth required. |
+| `/healthz` | JSON health check — pings SQLite with 3s timeout. No auth. |
+| `/stats.json` | Time-series metrics API (API calls, memory, cache sizes). Auth required. |
+| `/openapi.json` | Auto-generated OpenAPI 3.0 spec from annotated routes. Auth required. |
+| `/actions/*` | Management actions (resync, restart-sync, loglevel). POST only, CSRF-protected. Auth required. |
+| `/` | Landing page with stats, charts, and status. Auth required. |
+| `/chart.umd.min.js`, `/warpbox.svg`, `/favicon.ico` | Static assets (embedded at compile time). No auth. |
+
+## CDN Resilience
+
+The CDN proxy pipeline includes several defensive layers beyond the semaphore-controlled connection pool:
+
+- **Negative cache:** Failed CDN URL fetches are cached in-memory (configurable TTL, default 30s). Subsequent Plex retries skip the API entirely, preventing retry storms.
+- **Circuit breaker:** Per-torrent failure tracking with a sliding window (default 5 failures in 60s). A tripped breaker shorts all requests to that torrent for a cooldown period (default 5 minutes), preventing cascading failures from burning the rate budget.
+- **Disguised error detection (`isCDNDisguisedErrorBody`):** TorBox's CDN sometimes returns HTTP 200 with a text/html/json body instead of a proper 429 when rate-limiting. The proxy detects this by Content-Type and treats it as a transient error — the error page is never streamed to the client.
+- **CDN URL caching:** CDN download URLs are cached in SQLite (configurable TTL, default 120 minutes). Repeated range requests to the same file reuse the cached URL without hitting the API.
+- **Statistics recording:** Configurable interval stats (API call rates, memory usage, cache sizes) are written to SQLite and surfaced as sparkline charts on the landing page.
+
+## Library Change Hooks
+
+When the sync worker detects items have been added or removed, it can invoke shell commands (`library.on_items_added`, `library.on_items_removed`). Commands receive item directory names as positional arguments, with a configurable timeout (default 30s). Useful for refreshing media server libraries after sync.
+
+## CSRF Protection
+
+All `/actions/*` POST endpoints require an `X-CSRF-Token` header (generated per-session, stored in-memory). This prevents external websites from triggering management actions if the user is browsing while authenticated.
+
 ## Logging
 
 - Exclusively uses Go's native structured logging package (`log/slog`).

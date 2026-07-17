@@ -26,6 +26,7 @@ This page covers common problems, what they mean, and how to fix them.
 | PUID/PGID mismatch | Check the user ID on the host: `id <username>`. Set `PUID`/`PGID` to match. If Plex runs as UID 1001, use `PUID=1001, PGID=1001`. |
 | warpbox not reachable | Ensure warpbox started first. On bare metal, verify `curl http://localhost:1412/webdav/` responds. |
 | Mount directory doesn't exist | Create it: `mkdir -p /mnt/warpbox` |
+| `invalid URL escape "% ..."` for some files | Filenames with a literal `%` (e.g. `30% Iron Chef`) need percent-encoded WebDAV hrefs. Upgrade to v0.7.2+, which now encodes each path segment properly. |
 
 ## Rate limit errors (429) still appearing
 
@@ -45,7 +46,8 @@ This page covers common problems, what they mean, and how to fix them.
 1. **Check sync health.** Open the landing page (`http://localhost:1412/`). **Last Sync** should show seconds or minutes ago. If it says `never`, the sync hasn't completed yet. **API Bad** in red means TorBox is unreachable.
 2. **Wait for first sync.** It fires immediately at startup. Depending on library size, it may take 30–90 seconds. Refresh the landing page.
 3. **Wait for rclone poll interval.** New files appear after `--poll-interval` (default 5 minutes). Force a refresh: `rclone rc vfs/refresh recursive=true`.
-4. **Check your mount path.** The media server library path should be the mount point (e.g. `/mnt/warpbox/`). With virtual paths enabled, use the filtered subdirectory (e.g. `/mnt/warpbox/movies/`).
+4. **Check size bounds.** If you've set `min_file_size` or `max_file_size` on a virtual path, files outside that range are hidden from that view. Try removing the size filter temporarily to test.
+5. **Check your mount path.** The media server library path should be the mount point (e.g. `/mnt/warpbox/`). With virtual paths enabled, use the filtered subdirectory (e.g. `/mnt/warpbox/movies/`).
 
 ## Playback stutters or buffers
 
@@ -66,6 +68,7 @@ This page covers common problems, what they mean, and how to fix them.
 | Circuit breaker tripped on a torrent | A torrent with repeated failures is quarantined (default 5 minutes). The breaker auto-resets. This is normal — it stops one bad torrent from burning the rate budget. |
 | TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries with exponential backoff (15s → 30s → 60s → 2min → 5min max on repeated 429s). |
 | `cdn_url_ttl_minutes` set too high | Stale URLs fail on first use, triggering repair. Default 120 minutes is safe. Reduce if you see frequent stale URL warnings. |
+| `CDN data transient error, backing off` in logs | The CDN data endpoint returned a transient error (429/5xx/disguised text body) after the URL was already recovered. Warpbox invalidates the URL, backs off, and retries — this is normal. No action needed. |
 
 ## Web UI not accessible
 

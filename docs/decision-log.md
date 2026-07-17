@@ -123,9 +123,37 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/server/get.go` — `handleGetCDNHang` poll loop.
 - **Issue:** (none — discovered during deployment log review)
 
+## D-015c: CDN hang/poll data retry after URL recovery (extends D-015/b)
+
+- **Date:** 2026-07-16
+- **Context:** D-015 routed CDN data 429/5xx into the hang/poll loop. However,
+  after CDN URL recovery, the data proxy was a one-shot operation — any
+  transient error from the CDN data server (429, 5xx, disguised text body)
+  would stream the error page as file content into rclone's VFS cache,
+  permanently corrupting the cached copy. Plex's thumbnail probes and
+  hover-play on multi-file torrents could trigger sub-second 429 → URL
+  recovery → 429 thrash loops.
+- **Decision:** Extend `handleGetCDNHang` so that after obtaining a CDN URL,
+  the data proxy itself is also inside the retry loop. Transient data errors
+  (429, 5xx, or 200/206 with `text/*`/`html`/`json` Content-Type) invalidate
+  the cached URL, apply exponential backoff (binary‑doubled to 5‑minute max),
+  and loop back to re‑fetch a fresh URL. Only a valid binary 200/206 response
+  is streamed to the client.
+- **Rationale:** Matches the original D-013 "slow spinning disk" intent even
+  when the bottleneck is CDN data rather than requestdl rate limits. The
+  disguised-content-type detection (`isCDNDisguisedErrorBody`) prevents error
+  pages from being cached as file data.
+- **Implementation:** `internal/server/get.go` — `handleGetCDNHang`, `isCDNDisguisedErrorBody`.
+- **Issue:** (context.txt Widow's Bay / explorer thumbnail)
+
 ## D-016: CDN connection semaphore + reduced default concurrency 8→4
 
 - **Date:** 2026-06-11
+- **Updated:** 2026-07-16 — semaphore acquired *before* `client.Do` (not after),
+  so `max_cdn_connections` limits concurrent upstream CDN opens, not just
+  concurrent streams. Each error path now explicitly releases the slot before
+  returning. Implementation: `internal/server/get.go` — `streamFileContent`,
+  `handleGetCDNHang`.
 - **Context:** TorBox CDN rate-limits per-torrent concurrent chunk downloads. Eight concurrent 32MB chunk downloads triggered CDN 429s.
 - **Decision:** Implement a channel-based CDN connection semaphore and lower the default `MaxCDNConnections` from 8 to 4.
 - **Rationale:** The semaphore guarantees we never exceed N concurrent CDN data connections. Configurable via `cache.max_cdn_connections` (valid range 1–64).
@@ -193,3 +221,46 @@ This page documents all significant architectural and technical decisions made d
 - **Rationale:** The database is a cache derived from the TorBox API — it self-heals on the next sync cycle. A destructive schema upgrade is simpler and less risky than a table copy/rename migration. Since the DB holds no unique data (everything comes from the API), auto-recreate is safe.
 - **Config impact:** None. The landing page now shows both total and unique file counts.
 - **Implementation:** `internal/metadata/store.go` (schema, queries, migration), `internal/server/get.go` (CDN fallback), `internal/server/landing.go` (dual counts), `internal/tools/dbinspect/main.go` (updated checks).
+
+## D-023: Percent-encode WebDAV D:href and HTTP browser links
+
+- **Date:** 2026-07-16
+- **Context:** Filenames containing a literal `%` (e.g. "30% Iron Chef") produced
+  invalid URL references in PROPFIND `D:href` responses. Rclone parsed these as
+  malformed percent-escape sequences (`"% o"` is not a valid hex pair) and
+  failed with `invalid URL escape`, making those files completely inaccessible
+  through the rclone mount.
+- **Decision:** Add `encodeDAVHref()` which splits each path on `/`,
+  percent-encodes every segment via `url.PathEscape`, then joins with `/`.
+  Trailing slashes are preserved. Stored SQLite paths and `DisplayName` values
+  remain unencoded — only the wire-format `D:href` and HTTP browser `href`
+  attributes are encoded.
+- **Rationale:** Segment-level `url.PathEscape` is the correct encoding for
+  URL path segments per RFC 3986. `url.QueryEscape` would encode `/`, and
+  raw string concatenation would allow invalid URL characters through. The
+  unencoded `seen` map ensures deduplication works on logical paths, not
+  their encoded form.
+- **Implementation:** `internal/server/propfind.go` (`encodeDAVHref`, `appendResponse`), `internal/server/http_browser.go` (10 call sites).
+- **Issue:** #5
+
+## D-024: Per-virtual-path `min_file_size` / `max_file_size`
+
+- **Date:** 2026-07-17
+- **Context:** Rclone's `--min-size`/`--max-size` flags apply to the entire
+  mount. With multiple virtual paths (movies, tv, anime) on a single mount,
+  there was no way to apply different size policies per view. Clients that
+  bypass rclone entirely (Infuse WebDAV, HTTP browser) had no size filtering
+  at all.
+- **Decision:** Add optional `min_file_size` / `max_file_size` string fields
+  to each `virtual_paths` entry. Values are human-readable with binary units
+  (e.g. `300MB`, `1.5GB`, `10GB`). Parsed by `ParseFileSize()` into `int64`
+  bytes at config load and validated (min ≤ max). Applied in `Filter.Apply()`
+  after name/regex filters and before `largest_file_only`. Zero means no bound
+  (unlimited).
+- **Rationale:** Human-readable strings avoid unit errors while keeping config
+  files readable. Binary (1024) multipliers match media tooling conventions.
+  Applying size bounds after name filtering stays consistent with the existing
+  filter pipeline ordering.
+- **Alternatives considered:** Raw bytes (error-prone); decimal units (would
+  misalign with file sizes reported by other tools).
+- **Implementation:** `internal/library/size.go` (`ParseFileSize`), `internal/library/filter.go` (`MinSize`, `MaxSize`, `MatchSize`), `internal/config/config.go` (fields + validation), `internal/server/server.go` (`buildFilters` wiring).
