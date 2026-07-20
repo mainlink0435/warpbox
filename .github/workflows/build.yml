@@ -210,21 +210,23 @@ jobs:
         run: |
           TAG="${{ steps.tag2.outputs.tag }}"
           REGISTRY="ghcr.io/${GITHUB_REPOSITORY,,}"
-          docker pull "${REGISTRY}:${TAG}-amd64"
-          docker tag "${REGISTRY}:${TAG}-amd64" "${REGISTRY}:${TAG}"
-          docker push "${REGISTRY}:${TAG}"
+          docker buildx imagetools create \
+            -t "${REGISTRY}:${TAG}" \
+            "${REGISTRY}:${TAG}-amd64" \
+            "${REGISTRY}:${TAG}-arm64"
           rm -f warpbox.bin
           echo "Docker images published:"
-          echo "  ${REGISTRY}:${TAG} (linux/amd64, canonical)"
+          echo "  ${REGISTRY}:${TAG} (linux/amd64 + linux/arm64, multi-arch manifest)"
           echo "  ${REGISTRY}:${TAG}-amd64 (linux/amd64)"
           echo "  ${REGISTRY}:${TAG}-arm64 (linux/arm64)"
 
       - name: Push latest tag
         run: |
           REGISTRY="ghcr.io/${GITHUB_REPOSITORY,,}"
-          docker pull "${REGISTRY}:${TAG}-amd64"
-          docker tag "${REGISTRY}:${TAG}-amd64" "${REGISTRY}:latest"
-          docker push "${REGISTRY}:latest"
+          docker buildx imagetools create \
+            -t "${REGISTRY}:latest" \
+            "${REGISTRY}:${TAG}-amd64" \
+            "${REGISTRY}:${TAG}-arm64"
         env:
           TAG: ${{ steps.tag2.outputs.tag }}
 
