@@ -5,7 +5,7 @@ services:
     ports:
       - "1412:1412"
     volumes:
-      - ./config.yml:/data/config.yml:ro
+      - warpbox_data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:1412/healthz"]
@@ -65,4 +65,5 @@ services:
       --log-level NOTICE
 
 volumes:
+  warpbox_data:
   rclone_cache:
