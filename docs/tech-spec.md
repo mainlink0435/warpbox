@@ -531,9 +531,10 @@ Characters `\ / : * ? " < > | &` are replaced with `_`. All other characters (in
 
 ### Change Hooks
 
-Config keys `library.on_items_added` and `library.on_items_removed` specify shell commands. When the sync worker detects items have appeared or disappeared, it calls `runItemsHook(command, timeoutSec, items)` in `main.go`, which:
+Config keys `library.on_items_added` and `library.on_items_removed` specify shell commands. When the sync worker detects items have appeared or disappeared, it calls `runItemsHook(command, timeoutSec, items, workDir)` in `main.go`, which:
 - Splits command by whitespace: first token = executable, rest = static args
 - Appends item directory names as trailing positional arguments
+- Sets `cmd.Dir` to the config file's parent directory (so relative paths resolve against `config.yml`'s location)
 - `exec.CommandContext(timeoutCtx, cmd, args..., items...)`
 - Timeout from `hook_timeout_seconds` (default 30, range 1–3600)
 - Exceeding timeout → warning log, not fatal
@@ -852,8 +853,8 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | Key | Type | Default | Validation | Description |
 |-----|------|---------|------------|-------------|
 | `virtual_paths` | array | `[]` | unique names, no `/`, no `__all__` | Virtual path filters |
-| `on_items_added` | string | `""` | — | Shell command for new items |
-| `on_items_removed` | string | `""` | — | Shell command for removed items |
+| `on_items_added` | string | `""` | — | Shell command for new items; runs from config file's directory |
+| `on_items_removed` | string | `""` | — | Shell command for removed items; runs from config file's directory |
 | `hook_timeout_seconds` | int | `30` | 1–3600 | Hook execution timeout |
 
 Each virtual path entry:

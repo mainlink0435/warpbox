@@ -141,11 +141,16 @@ library:
 
   # Shell command to run when items are added to the library (after sync).
   # Receives item directory names as positional arguments.
+  # Commands run from the config file's directory (e.g., /data/ in Docker).
+  # Use absolute paths (e.g., "sh /data/script.sh") or paths relative to
+  # the config file's directory (e.g., "sh script.sh").
   # Example: "curl -X POST http://plex:32400/library/sections/1/refresh"
   # on_items_added: ""
   #
   # Shell command to run when items are removed from the library (after sync).
   # Receives item directory names as positional arguments.
+  # Commands run from the config file's directory (e.g., /data/ in Docker).
+  # Use absolute paths or paths relative to the config file's directory.
   # on_items_removed: ""
   #
   # Timeout in seconds for the hook commands. If a hook exceeds this, it is

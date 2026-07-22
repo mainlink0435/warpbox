@@ -93,6 +93,10 @@ docker compose restart warpbox
 > ```
 > Or view it: `docker exec warpbox cat /data/config.yml`
 
+### Library change hooks
+
+Warpbox can run shell commands when new or removed files are detected during a sync. Configure `library.on_items_added` and `library.on_items_removed` in your `config.yml`. Hook commands run from the config file's directory (`/data/` in Docker), so a script placed alongside config.yml can be referenced with a relative path like `sh myscript.sh`.
+
 ### Bare mount (without Docker)
 
 ```bash

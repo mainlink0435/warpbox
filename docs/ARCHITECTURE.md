@@ -53,7 +53,7 @@ The CDN proxy pipeline includes several defensive layers beyond the semaphore-co
 
 ## Library Change Hooks
 
-When the sync worker detects items have been added or removed, it can invoke shell commands (`library.on_items_added`, `library.on_items_removed`). Commands receive item directory names as positional arguments, with a configurable timeout (default 30s). Useful for refreshing media server libraries after sync.
+When the sync worker detects items have been added or removed, it can invoke shell commands (`library.on_items_added`, `library.on_items_removed`). Commands receive item directory names as positional arguments, with a configurable timeout (default 30s). Commands run from the config file's directory; use absolute paths or paths relative to that directory. Useful for refreshing media server libraries after sync.
 
 ## CSRF Protection
 

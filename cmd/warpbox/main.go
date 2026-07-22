@@ -132,14 +132,15 @@ func main() {
 
 	// Set library change hooks.
 	libCfg := &cfg.Library
+	hookWorkDir := filepath.Dir(*configPath)
 	if libCfg.OnItemsAdded != "" {
 		syncWorker.OnItemsAdded = func(items []string) {
-			runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)
+			runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items, hookWorkDir)
 		}
 	}
 	if libCfg.OnItemsRemoved != "" {
 		syncWorker.OnItemsRemoved = func(items []string) {
-			runItemsHook(libCfg.OnItemsRemoved, libCfg.HookTimeoutSec, items)
+			runItemsHook(libCfg.OnItemsRemoved, libCfg.HookTimeoutSec, items, hookWorkDir)
 		}
 	}
 
@@ -232,7 +233,7 @@ func main() {
 	}
 }
 
-func runItemsHook(command string, timeoutSec int, items []string) {
+func runItemsHook(command string, timeoutSec int, items []string, workDir string) {
 	if command == "" || len(items) == 0 {
 		return
 	}
@@ -246,6 +247,7 @@ func runItemsHook(command string, timeoutSec int, items []string) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], args...)
+	cmd.Dir = workDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
