@@ -5,6 +5,24 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Circuit-breaker quarantine escalation — a persistently-failing item's stale window now doubles each retry cycle up to `cache.circuit_breaker_max_stale_minutes` (default 60), so a permanently-broken torrent/usenet item stops being hammered
+- "Failed links" section on the landing page listing items that can't obtain a CDN link: amber **Failing (N)** while accumulating, red **Quarantined** once tripped (with remove-and-re-add guidance)
+- "API Health" section on the landing page (Healthy / Degraded / Insufficient data badge, trailing-window successes/failures/rate, last success/failure with relative time) plus a `requestdl_success_ratio` sparkline; the window is configurable via `stats.api_health_window_seconds` (default 300)
+- CDN 416 Range Not Satisfiable handling — the stored file size is corrected from the CDN's reported size and 416 is returned instead of 502
+- Sync status row on the landing page (`🔄 Syncing…` / `Idle`)
+- Uptime and "last sync" durations now include days (e.g. `16d16h32m55s`)
+- Non-200 TorBox API responses now surface the error code (e.g. `DATABASE_ERROR`, `BAD_TOKEN`) in logs
+
+### Fixed
+- `circuit_breaker_window_seconds` default raised 60 → 600 so persistent low-rate failures (throttled by the negative cache) trip the breaker, not just burst storms
+- A transient TorBox-wide outage no longer falsely labels healthy items as dead — the "remove and re-add" guidance only appears when the API is otherwise healthy
+- Items removed or re-added at TorBox clear quarantine automatically on the next metadata sync (breaker entries pruned for item ids no longer in the library)
+- Hang/poll entry log demoted from WARN to Info
+- TorBox account details on the landing page now show real data: the plan name is derived from the tier (Free/Essential/Pro/Standard), the premium-expiry date and subscription state (⭐) are no longer dropped by a JSON-tag mismatch, and dates are human-readable. The account table is trimmed to Plan, Email, Premium expires, and Account created (the previously-shown download/egress/ratio/referral rows came from fields the API doesn't return)
+
 ## [v0.7.6] - 2026-08-04
 
 ### Fixed

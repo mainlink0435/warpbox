@@ -109,7 +109,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 				// rclone counts toward maxErrorCount=10, causing Plex to trash the file),
 				// send success headers immediately and hold the connection while polling
 				// for the CDN URL. This looks like a slow spinning disk to Plex.
-				slog.Warn("GET: CDN URL unavailable (primary + alternatives), entering hang/poll mode",
+				slog.Info("GET: CDN URL unavailable (primary + alternatives), entering hang/poll mode",
 					"path", file.Path,
 					"source", file.Source,
 					"item_id", file.ItemID,
@@ -253,6 +253,39 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			return
 		}
 
+		// 416 Range Not Satisfiable: the CDN's actual file size is smaller than
+		// the recorded size (stale metadata / partial cache / stub file). The
+		// 416 response carries the true size as "content-range: bytes */N", so
+		// correct the DB size, invalidate the cached URL, and return 416 instead
+		// of 502 (which would burn rclone's maxErrorCount) or hang/poll forever.
+		if proxyResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			s.ReleaseCDNConn()
+			cr := proxyResp.Header.Get("Content-Range")
+			proxyResp.Body.Close()
+			if n, ok := parseCDNTrueSize(cr); ok && n != file.Size {
+				slog.Warn("CDN size mismatch, correcting file size",
+					"path", file.Path,
+					"db_size", file.Size,
+					"cdn_size", n,
+				)
+				_ = s.store.SetFileSize(file.ID, n)
+				if s.cfg.CDNTtlMinutes > 0 {
+					expiry := time.Now().Add(-1 * time.Hour)
+					_ = s.store.SetCDNURL(file.ID, "", expiry)
+				}
+				key := cdnCacheKey(file.Source, file.ItemID, file.FileID)
+				ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
+				s.negativeCacheMu.Lock()
+				s.negativeCache[key] = &negativeCacheEntry{
+					err:       fmt.Errorf("CDN size mismatch: DB %d, CDN %d", file.Size, n),
+					expiresAt: time.Now().Add(ttl),
+				}
+				s.negativeCacheMu.Unlock()
+			}
+			http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+
 		// Check for non-success status that won't be repaired.
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			s.ReleaseCDNConn()
@@ -369,8 +402,52 @@ func cdnCacheKey(source metadata.FileSource, itemID, fileID int64) string {
 	return fmt.Sprintf("%s:%d:%d", src, itemID, fileID)
 }
 
+// classifyTorboxError maps a requestdl error to a failure kind and the API
+// error code (e.g. "DATABASE_ERROR", "BAD_TOKEN"). Only clean, item-scoped
+// 5xx codes (DATABASE_ERROR and similar) are quarantine candidates; account
+// (auth) and transient (429/network/unclassified) failures are not.
+func classifyTorboxError(err error) (failureKind, string) {
+	if err == nil {
+		return failureKindTransient, ""
+	}
+	s := err.Error()
+	const marker = "unexpected status "
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return failureKindTransient, ""
+	}
+	rest := s[i+len(marker):] // e.g. "500 (DATABASE_ERROR)" or "500"
+	open := strings.IndexByte(rest, '(')
+	close := strings.LastIndexByte(rest, ')')
+	code := ""
+	if open > 0 && close > open {
+		code = rest[open+1 : close]
+	}
+	statusTok := rest
+	if open >= 0 {
+		statusTok = strings.TrimSpace(rest[:open])
+	}
+	status, err := strconv.Atoi(statusTok)
+	if err != nil {
+		return failureKindTransient, code
+	}
+	if code != "" {
+		switch {
+		case code == "BAD_TOKEN":
+			return failureKindAuth, code
+		case status >= 500:
+			return failureKindDatabaseError, code
+		default:
+			return failureKindTransient, code
+		}
+	}
+	return failureKindTransient, ""
+}
+
 // isTorrentStale checks whether a torrent has been marked stale by the circuit
-// breaker. Stale torrents skip API calls entirely.
+// breaker. Stale torrents skip API calls entirely. When a stale window expires,
+// a single half-open probe is allowed (concurrent callers are still skipped via
+// a short probe lock) so a recovered item can clear quarantine on the next try.
 func (s *Server) isTorrentStale(itemID int64) bool {
 	s.torrentFailuresMu.Lock()
 	defer s.torrentFailuresMu.Unlock()
@@ -381,15 +458,16 @@ func (s *Server) isTorrentStale(itemID int64) bool {
 	}
 	if !tracker.staleUntil.IsZero() {
 		if time.Now().Before(tracker.staleUntil) {
-			slog.Warn("circuit breaker: item marked stale, skipping CDN URL fetch",
+			slog.Debug("circuit breaker: item marked stale, skipping CDN URL fetch",
 				"item_id", itemID,
 				"stale_until", tracker.staleUntil.Format(time.RFC3339),
 			)
 			return true
 		}
-		// Stale period expired — remove the tracker so we try again.
-		delete(s.torrentFailures, itemID)
-		slog.Info("circuit breaker: item stale period expired, will retry",
+		// Stale window expired — allow exactly one probe and re-arm a short
+		// probe lock so concurrent callers still skip while it runs.
+		tracker.staleUntil = time.Now().Add(breakerProbeInterval)
+		slog.Info("circuit breaker: item stale period expired, probing once",
 			"item_id", itemID,
 		)
 	}
@@ -398,9 +476,12 @@ func (s *Server) isTorrentStale(itemID int64) bool {
 
 // recordTorrentFailure records a failure for the given item (torrent or usenet).
 // If the failure count exceeds cfg.CircuitBreakerFailures within
-// cfg.CircuitBreakerWindowSec, the item is marked stale for
-// cfg.CircuitBreakerStaleMin minutes.
-func (s *Server) recordTorrentFailure(itemID int64) {
+// cfg.CircuitBreakerWindowSec, the item is marked stale. Item-scoped
+// (database_error) failures escalate the stale window (5m → 10m → … capped by
+// circuit_breaker_max_stale_minutes) so a permanently-broken item stops being
+// hammered; transient and global-degraded failures trip a fixed window only and
+// never label the item "dead".
+func (s *Server) recordTorrentFailure(itemID int64, kind failureKind, err error) {
 	s.torrentFailuresMu.Lock()
 	defer s.torrentFailuresMu.Unlock()
 
@@ -410,6 +491,18 @@ func (s *Server) recordTorrentFailure(itemID int64) {
 		tracker = &torrentFailureTracker{}
 		s.torrentFailures[itemID] = tracker
 	}
+
+	// Record error details for the failed-links UI.
+	if err != nil {
+		tracker.lastErr = err.Error()
+	}
+	_, tracker.errorCode = classifyTorboxError(err)
+	// A transient TorBox-wide outage (globalDegraded) is not evidence that this
+	// item is dead — downgrade so it is never labelled "remove and re-add".
+	if kind == failureKindDatabaseError && s.globalDegraded() {
+		kind = failureKindTransient
+	}
+	tracker.errKind = kind
 
 	// Prune failures outside the sliding window.
 	window := time.Duration(s.cfg.CircuitBreakerWindowSec) * time.Second
@@ -423,18 +516,49 @@ func (s *Server) recordTorrentFailure(itemID int64) {
 	active = append(active, now)
 	tracker.failures = active
 
-	if len(active) >= s.cfg.CircuitBreakerFailures {
-		staleDur := time.Duration(s.cfg.CircuitBreakerStaleMin) * time.Minute
-		tracker.staleUntil = now.Add(staleDur)
-		slog.Warn("circuit breaker: item exceeded failure threshold, marking stale",
-			"item_id", itemID,
-			"failures", len(active),
-			"window_seconds", window.Seconds(),
-			"threshold", s.cfg.CircuitBreakerFailures,
-			"stale_duration_minutes", s.cfg.CircuitBreakerStaleMin,
-			"stale_until", tracker.staleUntil.Format(time.RFC3339),
-		)
+	if len(active) < s.cfg.CircuitBreakerFailures {
+		return
 	}
+
+	staleMin := s.cfg.CircuitBreakerStaleMin
+	if kind == failureKindDatabaseError && !s.globalDegraded() {
+		// Escalate: stale = min(cap, base << escalations). Base first trip = 5m.
+		base := int64(s.cfg.CircuitBreakerStaleMin)
+		capM := int64(s.cfg.CircuitBreakerMaxStaleMin)
+		if capM <= 0 {
+			capM = base // unset cap → no escalation beyond the base window
+		}
+		w := base << tracker.escalations
+		if w < base {
+			w = base // guard against shift overflow
+		}
+		if w > capM {
+			w = capM
+		}
+		staleMin = int(w)
+		if staleMin == s.cfg.CircuitBreakerMaxStaleMin && !tracker.quarantineNotified {
+			tracker.quarantineNotified = true
+			slog.Warn("circuit breaker: item likely orphaned on TorBox (consistently fails while other items succeed) — remove and re-add it",
+				"item_id", itemID,
+				"error", tracker.lastErr,
+				"escalations", tracker.escalations,
+			)
+		}
+		tracker.escalations++
+	}
+
+	staleDur := time.Duration(staleMin) * time.Minute
+	tracker.staleUntil = now.Add(staleDur)
+	tracker.trippedAt = now
+	slog.Warn("circuit breaker: item exceeded failure threshold, marking stale",
+		"item_id", itemID,
+		"failures", len(active),
+		"window_seconds", window.Seconds(),
+		"threshold", s.cfg.CircuitBreakerFailures,
+		"stale_duration_minutes", staleMin,
+		"kind", kind,
+		"stale_until", tracker.staleUntil.Format(time.RFC3339),
+	)
 }
 
 // getCDNURLWithRetry enqueues a TorBox requestdl call through the throttle
@@ -471,6 +595,10 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 
 		res := <-resCh
 
+		// Record the outcome for the global requestdl health tracker so a
+		// transient TorBox-wide flap is distinguishable from item-scoped failure.
+		s.recordRequestdlOutcome(res.err == nil)
+
 		if res.err == nil {
 			return res.url, nil
 		}
@@ -481,7 +609,18 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 
 		if !isRetryable || attempt >= maxRetries {
 			// Non-retryable or out of attempts — record and return.
-			s.recordTorrentFailure(itemID)
+			kind, code := classifyTorboxError(res.err)
+			if kind == failureKindAuth {
+				// Account-level failure (e.g. bad/expired API key) — never
+				// quarantine items; the landing page sync error surfaces it.
+				slog.Warn("torbox requestdl auth failure (check API key), not quarantining items",
+					"item_id", itemID,
+					"code", code,
+					"error", res.err,
+				)
+				return "", res.err
+			}
+			s.recordTorrentFailure(itemID, kind, res.err)
 			slog.Warn("CDN URL fetch failed, non-retryable or exhausted",
 				"item_id", itemID,
 				"file_id", fileID,
@@ -560,6 +699,9 @@ func (s *Server) fetchCDNURL(source metadata.FileSource, itemID, fileID int64) (
 		return "", err
 	}
 
+	// Success — clear any circuit-breaker quarantine so the item recovers
+	// immediately instead of waiting out the stale window.
+	s.clearTorrentFailure(itemID)
 	return cdnURL, nil
 }
 
@@ -774,6 +916,40 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			continue
 		}
 
+		// 416 in hang mode: headers are already flushed, so we can't change the
+		// status — but we correct the DB size, invalidate the cached URL, and
+		// negative-cache the file so the next (non-hang) request clamps to the
+		// true size instead of looping on out-of-bounds ranges.
+		if proxyResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			cr := proxyResp.Header.Get("Content-Range")
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			if n, ok := parseCDNTrueSize(cr); ok && n != file.Size {
+				slog.Warn("GET (hang): CDN size mismatch, correcting file size",
+					"path", file.Path,
+					"db_size", file.Size,
+					"cdn_size", n,
+				)
+				_ = s.store.SetFileSize(file.ID, n)
+				if s.cfg.CDNTtlMinutes > 0 {
+					expiry := time.Now().Add(-1 * time.Hour)
+					_ = s.store.SetCDNURL(file.ID, "", expiry)
+				}
+				key := cdnCacheKey(file.Source, file.ItemID, file.FileID)
+				ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
+				s.negativeCacheMu.Lock()
+				s.negativeCache[key] = &negativeCacheEntry{
+					err:       fmt.Errorf("CDN size mismatch: DB %d, CDN %d", file.Size, n),
+					expiresAt: time.Now().Add(ttl),
+				}
+				s.negativeCacheMu.Unlock()
+			}
+			slog.Warn("GET (hang): CDN returned 416 (range not satisfiable)",
+				"path", file.Path,
+			)
+			return
+		}
+
 		// Non-recoverable response — log and exit (headers already sent).
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			proxyResp.Body.Close()
@@ -805,6 +981,21 @@ type httpRange struct {
 	Start  int64
 	End    int64
 	Length int64
+}
+
+// parseCDNTrueSize parses a CDN 416 "Content-Range: bytes */<size>" header and
+// returns the file's true size. Returns ok=false if the header is absent or
+// malformed.
+func parseCDNTrueSize(contentRange string) (int64, bool) {
+	star := strings.Index(contentRange, "*/")
+	if star < 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(contentRange[star+2:]), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // parseRange parses a "bytes=start-end" Range header and returns the computed

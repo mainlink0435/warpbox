@@ -23,22 +23,20 @@ import (
 // ---------------------------------------------------------------------------
 
 // UserInfo represents the TorBox account details from GET /api/user/me.
+//
+// Field names match the real API response (verified against the official
+// TorBox JS SDK, TorBox-App/torbox-sdk-js). Note: the API returns the plan as
+// an integer only (0=Free, 1=Essential, 2=Pro, 3=Standard); there is no
+// plan_name field, and subscription state is `is_subscribed`, not `premium`.
 type UserInfo struct {
-	ID              int64   `json:"id"`
-	AuthID          string  `json:"auth_id"`
-	Email           string  `json:"email"`
-	Plan            int     `json:"plan"`
-	PlanName        string  `json:"plan_name"`
-	Premium         bool    `json:"premium"`
-	PremiumExpires  *string `json:"premium_expires,omitempty"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	ReferralCode    string  `json:"referral_code"`
-	Registered     bool    `json:"registered"`
-	PremiumDownloadLimit int64 `json:"premium_download_limit"`
-	TotalDownloaded int64  `json:"total_downloaded"`
-	TotalEgressed   int64  `json:"total_egressed"`
-	OverallRatio    float64 `json:"overall_ratio"`
+	ID               int64   `json:"id"`
+	AuthID           string  `json:"auth_id"`
+	Email            string  `json:"email"`
+	Plan             int     `json:"plan"`
+	IsSubscribed     bool    `json:"is_subscribed"`
+	PremiumExpiresAt *string `json:"premium_expires_at,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +432,7 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 		return nil, fmt.Errorf("torbox user/me API error: %s", *env.Error)
 	}
 
-	slog.Debug("torbox user/me result", "plan", env.Data.PlanName, "email", env.Data.Email)
+	slog.Debug("torbox user/me result", "plan", env.Data.Plan, "email", env.Data.Email)
 	return &env.Data, nil
 }
 
@@ -478,6 +476,18 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 			"endpoint", req.URL.Path,
 			"body", truncateBody(body),
 		)
+
+		// Surface the API error code (e.g. DATABASE_ERROR, BAD_TOKEN) in the
+		// returned error so callers can classify item-scoped vs account-level
+		// failures. Falls back to the bare status when the body isn't the
+		// standard JSON envelope. The "unexpected status 5" substring is
+		// preserved so IsRetryable still treats 5xx as transient.
+		var env struct {
+			Error *string `json:"error"`
+		}
+		if json.Unmarshal(body, &env) == nil && env.Error != nil && *env.Error != "" {
+			return nil, fmt.Errorf("torbox: unexpected status %d (%s)", resp.StatusCode, *env.Error)
+		}
 		return nil, fmt.Errorf("torbox: unexpected status %d", resp.StatusCode)
 	}
 

@@ -21,8 +21,9 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `cache.negative_cache_ttl_seconds` | 30 | 1–300 | Plex retry storms are still hitting the API — lengthen the TTL |
 | `cache.negative_cache_max_entries` | 5000 | 100–50000 | Memory is tight (lower), or you have many files and see cache thrashing (raise) |
 | `cache.circuit_breaker_failures` | 5 | 1–100 | A single bad torrent is consuming too much rate budget — tighten this |
-| `cache.circuit_breaker_window_seconds` | 60 | 1–3600 | Failures are spread out over longer periods — widen the window |
+| `cache.circuit_breaker_window_seconds` | 600 | 1–3600 | Failures are spread out over longer periods — widen the window |
 | `cache.circuit_breaker_stale_minutes` | 5 | 1–60 | You want quarantined torrents to recover faster or slower |
+| `cache.circuit_breaker_max_stale_minutes` | 60 | 5–1440 | A permanently-broken item keeps re-tripping — raise the cap so it is hammered even less |
 | `cache.circuit_breaker_max_entries` | 2000 | 50–20000 | Memory is tight (lower), or you have many active torrents (raise) |
 | `cache.cleanup_interval_seconds` | 60 | 10–3600 | Stats recording also uses this interval — see interactions below |
 | `sync.interval_minutes` | 5 | 1–1440 | New content shows up too slowly for your workflow |
@@ -35,6 +36,7 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `cache.cdn_url_429_backoff_seconds` | 30 | 1–300 | You see CDN URL fetch loops after TorBox rate-limits |
 | `stats.retention_hours` | 24 | 1–720 | You want longer history on the sparkline charts |
 | `stats.chart_minutes` | 60 | 1–1440 | You want the landing page chart to show a shorter or longer window |
+| `stats.api_health_window_seconds` | 300 | 60–3600 | You want the API-health indicator / flap detection to be more or less responsive |
 | `auth.enabled` | false | true/false | The web UI is accessible to others on your network |
 | `logging.level` | info | debug/info/warn/error | You're troubleshooting and need more detail |
 | `logging.format` | text | text/json | You're sending logs to a structured log collector |
@@ -116,6 +118,17 @@ in your account is visible in the mount.
 The three circuit breaker values work together:
 - `failures` over `window` seconds triggers quarantine
 - Quarantine lasts `stale_minutes`
+- `max_stale_minutes` caps how far the quarantine window can escalate
+
+The default `window` is 600 seconds (10 minutes), so a persistently-failing item
+is quarantined even at low request rates (the negative cache throttles requestdl
+to ~1 call per 30s per file, which a 60s window would never accumulate enough of).
+
+For item-scoped failures (e.g. TorBox `DATABASE_ERROR` on an orphaned torrent),
+the stale window doubles each retry cycle (`5m → 10m → 20m → …`) up to
+`max_stale_minutes`, so a permanently-broken item stops being hammered. A
+transient TorBox-wide outage never escalates items — they recover automatically
+when the API returns.
 
 If you tighten `failures` (lower) or `window` (shorter), the breaker trips
 faster — good for stopping problematic torrents, but it may quarantine

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,12 +41,75 @@ type negativeCacheEntry struct {
 	expiresAt time.Time
 }
 
+// failureKind classifies a CDN URL fetch failure so the circuit breaker can
+// distinguish item-scoped failures (quarantine candidates) from transient or
+// account-level ones (which must not be labelled "dead").
+type failureKind string
+
+const (
+	failureKindAuth          failureKind = "auth"
+	failureKindTransient     failureKind = "transient"
+	failureKindDatabaseError failureKind = "database_error"
+)
+
 // torrentFailureTracker counts failures for a single torrent within a sliding
 // window. Once the threshold is exceeded, the torrent is marked "stale" and
 // all CDN URL fetches are skipped until the next metadata sync.
+//
+// IMPORTANT: trackers are keyed by item id only — never by hash or path — so
+// that removing and re-adding a torrent at TorBox (which yields a new item id)
+// produces a fresh tracker with no inherited quarantine.
 type torrentFailureTracker struct {
 	failures   []time.Time
 	staleUntil time.Time
+
+	// Details surfaced on the landing page "failed links" list.
+	errKind            failureKind
+	lastErr            string
+	errorCode          string // e.g. "DATABASE_ERROR"
+	trippedAt          time.Time
+	escalations        int  // how many times the stale window has been doubled
+	quarantineNotified bool // a "remove and re-add" warning has been logged
+}
+
+// QuarantinedItem is a snapshot of a circuit-breaker entry for the landing page.
+type QuarantinedItem struct {
+	ItemID      int64
+	Label       string
+	ErrKind     failureKind
+	ErrorCode   string
+	LastError   string
+	Failures    int
+	TrippedAt   time.Time
+	StaleUntil  time.Time
+	Escalations int
+	Tripped     bool // true once the breaker threshold was reached (quarantined)
+}
+
+// requestdlOutcome records a single requestdl result for the global health
+// tracker.
+type requestdlOutcome struct {
+	at time.Time
+	ok bool
+}
+
+// Global requestdl health window and degraded thresholds. These are constants
+// (not config) — they gate the quarantine escalation, not tuneable behaviour.
+const (
+	defaultGlobalHealthWindow = 5 * time.Minute // fallback when stats.api_health_window_seconds is unset
+	globalHealthMinSamples    = 5
+	globalHealthFailRatio     = 0.8
+	breakerProbeInterval      = 15 * time.Second // single half-open probe window after a stale period
+)
+
+// healthWindow returns the configured API-health / flap-detection window,
+// falling back to 5 minutes when unset (e.g. direct constructions/tests).
+func (s *Server) healthWindow() time.Duration {
+	w := time.Duration(s.cfg.APIHealthWindowSeconds) * time.Second
+	if w <= 0 {
+		w = defaultGlobalHealthWindow
+	}
+	return w
 }
 
 // Server is the Warpbox WebDAV server.
@@ -67,6 +131,12 @@ type Server struct {
 	// Circuit breaker: per-torrent failure tracking.
 	torrentFailures   map[int64]*torrentFailureTracker
 	torrentFailuresMu sync.Mutex
+
+	// Global requestdl health tracker: rolling window of outcomes used to
+	// detect a transient TorBox-wide outage so individual items aren't
+	// falsely labelled "dead" while the API as a whole is failing.
+	requestdlHealthMu sync.Mutex
+	requestdlOutcomes []requestdlOutcome
 
 	// CDN connection semaphore: limits concurrent proxy connections to TorBox CDN.
 	cdnSem chan struct{}
@@ -134,6 +204,7 @@ type Config struct {
 	CircuitBreakerFailures  int // Max failures in window; default 5
 	CircuitBreakerWindowSec int // Sliding window seconds; default 60
 	CircuitBreakerStaleMin  int // Stale duration minutes; default 5
+	CircuitBreakerMaxStaleMin int // Max escalated stale window minutes; default 60
 
 	// Memory management settings.
 	NegativeCacheMaxEntries  int // Max entries in negative cache; default 5000
@@ -154,6 +225,7 @@ type Config struct {
 	StatsIntervalSeconds int // How often to record stats; default 60
 	StatsRetentionHours  int // How long to retain stats rows; default 24
 	StatsChartMinutes    int // How far back the landing page chart shows; default 60
+	APIHealthWindowSeconds int // Rolling window for the API-health indicator & flap detection; default 300
 
 	// LevelVar for atomic runtime log level switching. Shared with main.go's
 	// slog.HandlerOptions.Level so a Set() call takes effect immediately.
@@ -363,12 +435,18 @@ func (s *Server) recordStats() {
 		"db_lock_errors":    float64(dLockErrors),
 		"gc_cycles":         float64(dNumGC),
 
-		// Gauges — point-in-time values, not deltas.
-		"sys_mb":                  float64(mem.Sys / 1024 / 1024),
-		"alloc_mb":                float64(mem.Alloc / 1024 / 1024),
-		"heap_objects":            float64(mem.HeapObjects),
-		"negative_cache_entries":  float64(s.NegativeCacheSize()),
-		"circuit_breaker_entries": float64(s.CircuitBreakerSize()),
+	// Gauges — point-in-time values, not deltas.
+	"sys_mb":                  float64(mem.Sys / 1024 / 1024),
+	"alloc_mb":                float64(mem.Alloc / 1024 / 1024),
+	"heap_objects":            float64(mem.HeapObjects),
+	"negative_cache_entries":  float64(s.NegativeCacheSize()),
+	"circuit_breaker_entries": float64(s.CircuitBreakerSize()),
+	}
+
+	// Requestdl API health as a 0-100 gauge over the trailing window, so charts
+	// show how flaky the API is over time. Skipped when the window has no samples.
+	if h := s.requestdlHealth(); h.Samples > 0 {
+		metrics["requestdl_success_ratio"] = h.Ratio * 100
 	}
 
 	if err := s.store.RecordStats(metrics); err != nil {
@@ -494,6 +572,223 @@ func (s *Server) sweepCircuitBreaker() {
 			"max", s.circuitBreakerMaxEntries,
 		)
 	}
+}
+
+// recordRequestdlOutcome records a requestdl success/failure for the global
+// health tracker, pruning outcomes older than the window.
+func (s *Server) recordRequestdlOutcome(ok bool) {
+	s.requestdlHealthMu.Lock()
+	defer s.requestdlHealthMu.Unlock()
+
+	now := time.Now()
+	s.requestdlOutcomes = append(s.requestdlOutcomes, requestdlOutcome{at: now, ok: ok})
+
+	cutoff := now.Add(-s.healthWindow())
+	keep := s.requestdlOutcomes[:0]
+	for _, o := range s.requestdlOutcomes {
+		if o.at.After(cutoff) {
+			keep = append(keep, o)
+		}
+	}
+	s.requestdlOutcomes = keep
+}
+
+// globalDegraded reports whether the requestdl API as a whole looks degraded
+// (e.g. a transient TorBox outage). When true, item-scoped failures are treated
+// as transient and never escalated or labelled "dead", so a global flap cannot
+// falsely quarantine healthy items.
+func (s *Server) globalDegraded() bool {
+	s.requestdlHealthMu.Lock()
+	defer s.requestdlHealthMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-s.healthWindow())
+	var fails, succ int
+	for _, o := range s.requestdlOutcomes {
+		if o.at.After(cutoff) {
+			if o.ok {
+				succ++
+			} else {
+				fails++
+			}
+		}
+	}
+	if fails+succ < globalHealthMinSamples {
+		return false
+	}
+	if succ == 0 {
+		return true
+	}
+	return float64(fails)/float64(fails+succ) >= globalHealthFailRatio
+}
+
+// APIHealth is a snapshot of the requestdl API health over the rolling window,
+// surfaced on the landing page so it is obvious when TorBox is flaky.
+type APIHealth struct {
+	Samples     int
+	Successes   int
+	Failures    int
+	Ratio       float64 // successes / samples (0.0–1.0)
+	LastSuccess time.Time
+	LastFailure time.Time
+	Degraded    bool // globalDegraded() over the window
+	TooFew      bool // fewer than globalHealthMinSamples samples in the window
+}
+
+// requestdlHealth returns the current requestdl health over the rolling window.
+func (s *Server) requestdlHealth() APIHealth {
+	s.requestdlHealthMu.Lock()
+	defer s.requestdlHealthMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-s.healthWindow())
+	h := APIHealth{}
+	var fails, succ int
+	var lastSucc, lastFail time.Time
+	for _, o := range s.requestdlOutcomes {
+		if !o.at.After(cutoff) {
+			continue
+		}
+		h.Samples++
+		if o.ok {
+			succ++
+			if o.at.After(lastSucc) {
+				lastSucc = o.at
+			}
+		} else {
+			fails++
+			if o.at.After(lastFail) {
+				lastFail = o.at
+			}
+		}
+	}
+	h.Successes = succ
+	h.Failures = fails
+	if h.Samples > 0 {
+		h.Ratio = float64(succ) / float64(h.Samples)
+	}
+	h.LastSuccess = lastSucc
+	h.LastFailure = lastFail
+	h.TooFew = h.Samples < globalHealthMinSamples
+	if !h.TooFew {
+		if succ == 0 {
+			h.Degraded = true
+		} else {
+			h.Degraded = float64(fails)/float64(h.Samples) >= globalHealthFailRatio
+		}
+	}
+	return h
+}
+
+// Percent formats the success ratio as a percentage string for the landing page.
+func (h APIHealth) Percent() string {
+	if h.Samples == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f%%", h.Ratio*100)
+}
+
+// LastSuccessDisplay renders the last successful requestdl time with date,
+// timezone, and relative context (e.g. "Aug 10 02:39:49 UTC (3m25s ago)").
+func (h APIHealth) LastSuccessDisplay() string {
+	return relativeTimeDisplay(h.LastSuccess)
+}
+
+// LastFailureDisplay renders the last failed requestdl time with date,
+// timezone, and relative context.
+func (h APIHealth) LastFailureDisplay() string {
+	return relativeTimeDisplay(h.LastFailure)
+}
+
+// relativeTimeDisplay formats a time for the landing page, returning "—" for a
+// zero time and otherwise "Jan 2 15:04:05 MST (X ago)".
+func relativeTimeDisplay(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return fmt.Sprintf("%s (%s ago)", t.Format("Jan 2 15:04:05 MST"), formatDuration(time.Since(t)))
+}
+
+// clearTorrentFailure removes a circuit-breaker tracker after a successful
+// CDN URL fetch, so a recovered item stops being quarantined immediately.
+func (s *Server) clearTorrentFailure(itemID int64) {
+	s.torrentFailuresMu.Lock()
+	delete(s.torrentFailures, itemID)
+	s.torrentFailuresMu.Unlock()
+}
+
+// QuarantinedItems returns a snapshot of the circuit-breaker entries for the
+// landing page "failed links" section. Labels are resolved from the store so a
+// re-added item shows its current name.
+func (s *Server) QuarantinedItems() []QuarantinedItem {
+	type raw struct {
+		id int64
+		t  *torrentFailureTracker
+	}
+	s.torrentFailuresMu.Lock()
+	raws := make([]raw, 0, len(s.torrentFailures))
+	for id, t := range s.torrentFailures {
+		// List every tracked item — tripped (quarantined) and still-failing
+		// (untripped) — so problems are visible immediately.
+		raws = append(raws, raw{id, t})
+	}
+	s.torrentFailuresMu.Unlock()
+
+	items := make([]QuarantinedItem, 0, len(raws))
+	for _, r := range raws {
+		label := ""
+		if lbl, err := s.store.GetFileLabelByItemID(r.id); err == nil && lbl != "" {
+			label = lbl
+		} else {
+			label = fmt.Sprintf("item #%d", r.id)
+		}
+		items = append(items, QuarantinedItem{
+			ItemID:      r.id,
+			Label:       label,
+			ErrKind:     r.t.errKind,
+			ErrorCode:   r.t.errorCode,
+			LastError:   r.t.lastErr,
+			Failures:    len(r.t.failures),
+			TrippedAt:   r.t.trippedAt,
+			StaleUntil:  r.t.staleUntil,
+			Escalations: r.t.escalations,
+			Tripped:     !r.t.trippedAt.IsZero(),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].StaleUntil.Before(items[j].StaleUntil)
+	})
+	return items
+}
+
+// PruneBreakerForMissingItems drops circuit-breaker trackers (and matching
+// negative-cache entries) whose item id is no longer present in the store.
+// Called at the end of each successful metadata sync so that removed/re-added
+// items are not stuck in quarantine for a full stale window. Quarantine is
+// keyed by item id only, so a re-added torrent (new id) never inherits the old
+// item's dead state.
+func (s *Server) PruneBreakerForMissingItems(liveIDs map[int64]struct{}) {
+	s.torrentFailuresMu.Lock()
+	for id := range s.torrentFailures {
+		if _, ok := liveIDs[id]; !ok {
+			delete(s.torrentFailures, id)
+		}
+	}
+	s.torrentFailuresMu.Unlock()
+
+	s.negativeCacheMu.Lock()
+	for k := range s.negativeCache {
+		// Negative-cache keys are "src:itemID:fileID".
+		parts := strings.Split(k, ":")
+		if len(parts) == 3 {
+			if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+				if _, ok := liveIDs[id]; !ok {
+					delete(s.negativeCache, k)
+				}
+			}
+		}
+	}
+	s.negativeCacheMu.Unlock()
 }
 
 // NegativeCacheSize returns the current number of entries in the negative cache.

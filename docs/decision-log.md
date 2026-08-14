@@ -327,3 +327,146 @@ This page documents all significant architectural and technical decisions made d
   of destroying the usenet library.
 - **Config:** `sync.list_page_size` (default 5000), `torbox.request_timeout_seconds`, `sync.sync_timeout_seconds`, `cache.cdn_proxy_timeout_seconds`, `cache.cdn_url_429_backoff_seconds`.
 - **Implementation:** `internal/config/config.go`, `internal/torbox/client.go` (page retry, `SetTimeout`), `internal/metadata/sync.go` (guard, per-source prune, ctx propagation, `SyncNow`), `internal/metadata/store.go` (`PruneBySyncTag(tag, source)`), `internal/server/get.go` + `internal/server/server.go` (CDN timeouts), `cmd/warpbox/main.go`, plus tests and docs.
+
+## D-026: Quarantine escalation + global health gate + failed-links UI
+
+- **Date:** 2026-08-10
+- **Context:** An 8-hour log window showed a single orphaned TorBox torrent (item
+  70658216, `server=0` — a cache entry stranded on a dead node) making
+  `GET /v1/api/torrents/requestdl` return HTTP 500 `DATABASE_ERROR` persistently,
+  while every other torrent and usenet file succeeded. Warpbox's circuit breaker
+  (D-008) tripped, auto-reset, and re-hammered the item every ~6 minutes for
+  hours (~1800 wasted requestdl calls). The item itself is unfixable from warpbox
+  — it needs to be removed and re-added at TorBox — but warpbox's reaction was
+  not ideal: it kept retrying indefinitely, logged no clear remediation, and
+  exposed nothing in the UI.
+- **Decisions:**
+  1. **Surface API error codes.** `torbox` non-200 responses now include the
+     envelope's `error` field (e.g. `torbox: unexpected status 500
+     (DATABASE_ERROR)`, `(BAD_TOKEN)`), so callers can classify failures.
+  2. **Quarantine escalation (half-open).** Item-scoped failures escalate the
+     stale window (`5m → 10m → 20m → …`) capped by the new
+     `circuit_breaker_max_stale_minutes` (default 60), so a permanently-broken
+     item settles to ~1 probe/hour instead of hammering. After each window, one
+     probe is allowed; success clears the tracker, failure re-escalates.
+  3. **Global health gate.** A rolling window of requestdl outcomes flags a
+     transient TorBox-wide outage (`globalDegraded()`). During it, item failures
+     are treated as transient and never escalated or labelled "dead", so a
+     global flap cannot falsely quarantine healthy items.
+  4. **Classification.** `auth` (`BAD_TOKEN`) failures never quarantine (they
+     are account-level and surfaced by the sync error); `transient`
+     (429/network/HTML) failures trip the base window only.
+  5. **Sync-driven pruning.** After each successful sync,
+     `PruneBreakerForMissingItems` drops breaker/negative-cache entries for item
+     ids no longer in the store, so a remove-and-re-add heals within one sync
+     interval. Quarantine stays keyed by item id only — never hash/path — so a
+     re-added torrent (new id) never inherits the old item's dead state.
+  6. **Failed-links UI.** The landing page gains a "Quarantined items (failed
+     links)" table with per-error-code guidance, and the stale-skip log was
+     demoted from WARN to Debug to stop the log flood.
+- **Rationale:** The 8-hour storm was the failure mode of a *permanently* broken
+  item — a case the D-008 breaker was never designed for (it was built for
+  recoverable expired torrents). Escalation + the global-health gate distinguish
+  "this item is dead" from "the API is having a moment", and the UI gives the
+  user an actionable list instead of a log wall.
+- **Config:** `cache.circuit_breaker_max_stale_minutes` (default 60, 5–1440).
+- **Implementation:** `internal/torbox/client.go`, `internal/server/get.go`,
+  `internal/server/server.go`, `internal/metadata/sync.go` (`OnSyncDone`),
+  `internal/metadata/store.go` (`GetFileLabelByItemID`), `internal/server/landing.go`/`landing.html`, `internal/config/config.go`, `cmd/warpbox/main.go`, plus tests and docs.
+
+## D-027: CDN 416 Range Not Satisfiable → size-mismatch correction
+
+- **Date:** 2026-08-10
+- **Context:** Some files (e.g. obfuscated releases) returned HTTP 416 from the
+  CDN because the CDN's actual cached file is smaller than warpbox's recorded
+  size. Warpbox returned 502 (which rclone counts toward `maxErrorCount=10`,
+  risking the file being trashed from the mount) and never invalidated the
+  cached URL, so the player hammered the same dead URL for hours. The CDN's 416
+  response carries the true size in `Content-Range: bytes */<size>`.
+- **Decisions:** On a CDN 416, parse the true size; if it differs from the
+  stored size, update the DB size, invalidate the cached CDN URL, negative-cache
+  the file, and return 416 to the client (not 502). Never route 416 into
+  hang/poll and never quarantine on it — it is a size/content mismatch, often
+  transient while a torrent finishes caching, and the size-correction +
+  fresh-URL retry handles recovery.
+- **Rationale:** A 416 is neither a stale-URL error (403/404) nor a transient
+  CDN error (429/5xx) — it is a definite size mismatch. Correcting the size
+  makes partially-cached files playable up to their true length and shows stub
+  files at their real (tiny) size, while returning 416 instead of 502 avoids
+  burning rclone's error budget.
+- **Implementation:** `internal/server/get.go` (`streamFileContent` +
+  `handleGetCDNHang`), `internal/metadata/store.go` (`SetFileSize`), plus tests.
+
+## D-028: Quarantine persistence window + API Health dashboard
+
+- **Date:** 2026-08-10
+- **Context:** Dev-deploy verification of D-026 showed a gap: a persistently-broken
+  item at low request rate (the negative cache throttles requestdl to ~1 call per
+  30s per file) never tripped the breaker, because the failure-counting window
+  (60s) could never accumulate 5 failures. The item showed in "Quarantined items"
+  with `Failures=1` and no trip/retry times, and kept hitting the API. Separately,
+  there was no quick way to tell "the TorBox API is flaky right now" from the UI.
+- **Decisions:**
+  1. **Persist, not just burst.** Bump `circuit_breaker_window_seconds` default
+     60 → 600 (10 min), so sustained low-rate failures trip the breaker too.
+     Bursts still trip instantly.
+  2. **Flap-safe UI.** At record time, downgrade a `database_error` to
+     `transient` while `globalDegraded()` — the row shows "retrying
+     automatically", never the false "remove and re-add".
+  3. **Only real quarantines listed.** `QuarantinedItems` filters to trackers
+     that have tripped, so a half-populated row (Failures=1, dashes) never
+     appears.
+  4. **API Health.** Surface the requestdl health tracker as a landing-page
+     "API Health" section (badge Healthy/Degraded/Insufficient data + window
+     successes/failures/rate + last success/failure) and as a
+     `requestdl_success_ratio` (0–100) gauge/sparkline so "is the API flaky?"
+     is answerable at a glance. Demoted the hang/poll entry log WARN → Info.
+  5. **Sync visibility.** Expose `SyncStatus.InProgress` as a landing-page "Sync
+     Status" row (`🔄 Syncing…` / `Idle`) so a slow first sync (large paginated
+     mylist through the throttle queue) is identifiable rather than reading as
+     "last sync: never". The `starting`/`complete` sync logs stay at Debug to
+     avoid spamming the log on a short interval.
+  6. **Configurable API-health window.** The rolling window behind the API-health
+     indicator (and the flap-detection gate) is now `stats.api_health_window_seconds`
+     (default 300, 60–3600) instead of a fixed 5-minute constant.
+  7. **Failing items always visible.** The landing "Failed links" list shows
+     every tracked item: amber **Failing (N)** for untripped items and red
+     **Quarantined** for tripped ones, so a persistently-failing item is visible
+     immediately rather than only after the breaker trips.
+- **Rationale:** Quarantine should engage on persistence, not just retry storms;
+  and the health gate that prevents false "dead" labels is only trustworthy if
+  its state is visible.
+- **Config:** `circuit_breaker_window_seconds` default changed 60 → 600.
+- **Implementation:** `internal/config/config.go`, `internal/server/get.go`,
+  `internal/server/server.go` (`APIHealth`, `requestdlHealth`,
+  `QuarantinedItems` filter), `internal/server/landing.go`/`landing.html`,
+  plus tests and docs.
+
+## D-029: Correct TorBox user-info field mapping + trim account display
+
+- **Date:** 2026-08-10
+- **Context:** The landing page "TorBox Account" section showed misleading data:
+  a blank plan name (`(tier 2)` with no name), `Premium download limit 0`,
+  `Total egressed 0`, `Overall ratio 0.00`, `Premium expires —`, and a blank
+  referral code — even on a Pro account. The `UserInfo` struct in
+  `internal/torbox/client.go` used JSON tags that did not match the real
+  TorBox `/user/me` response.
+- **Decision:** Map the struct to the API's actual field names (verified
+  against the official TorBox JS SDK, `TorBox-App/torbox-sdk-js`):
+  - `is_subscribed` (not `premium`/`registered`) → drives the ⭐ Premium badge.
+  - `premium_expires_at` (not `premium_expires`) → the real expiry date.
+  - Remove fields the API does not return: `plan_name`, `premium`,
+    `registered`, `premium_download_limit`, `total_egressed`, `overall_ratio`,
+    `referral_code` (`user_referral`), `total_downloaded`.
+  - The plan name is not in the response; derive it from the tier integer
+    (`0=Free, 1=Essential, 2=Pro, 3=Standard`) via `planName()`.
+  - Trim the landing-page account table to exactly: Plan, Email, Premium
+    expires, Account created — dropping the fake 0/blank rows — and format
+    dates as human-readable (`formatTBDate`, e.g. "12 May 2026").
+- **Rationale:** The old tags silently discarded real data (expiry date,
+  referral) and surfaced fields that never exist, making the section read as
+  "free/empty" for everyone. Mapping to the real schema restores accuracy with
+  no API change.
+- **Implementation:** `internal/torbox/client.go` (`UserInfo`),
+  `internal/server/landing.go` (`planName`, `formatTBDate`, `LandingData`),
+  `internal/server/landing.html`, plus tests and docs.

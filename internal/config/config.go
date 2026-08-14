@@ -43,6 +43,7 @@ type CacheConfig struct {
 	CircuitBreakerFailures   *int `yaml:"circuit_breaker_failures"`    // Max failures in window; nil→default 5
 	CircuitBreakerWindowSec  *int `yaml:"circuit_breaker_window_seconds"` // Sliding window; nil→default 60
 	CircuitBreakerStaleMin   *int `yaml:"circuit_breaker_stale_minutes"` // Stale duration; nil→default 5
+	CircuitBreakerMaxStaleMinutes *int `yaml:"circuit_breaker_max_stale_minutes"` // Escalated stale window cap; nil→default 60
 
 	// Memory management settings.
 	NegativeCacheMaxEntries   *int `yaml:"negative_cache_max_entries"`   // Max entries in negative cache; nil→default 5000
@@ -80,9 +81,10 @@ type SyncConfig struct {
 
 // StatsConfig holds time-series stats collection settings.
 type StatsConfig struct {
-	IntervalSeconds int `yaml:"interval_seconds"` // How often to record stats snapshots; default 60
-	RetentionHours  int `yaml:"retention_hours"`  // How long to retain stats rows; default 24
-	ChartMinutes    int `yaml:"chart_minutes"`    // How far back the landing page chart shows; default 60
+	IntervalSeconds int `yaml:"interval_seconds"`       // How often to record stats snapshots; default 60
+	RetentionHours  int `yaml:"retention_hours"`        // How long to retain stats rows; default 24
+	ChartMinutes    int `yaml:"chart_minutes"`          // How far back the landing page chart shows; default 60
+	ApiHealthWindowSeconds int `yaml:"api_health_window_seconds"` // Rolling window for the API-health indicator & flap detection; default 300
 }
 
 // VirtualPathConfig holds a single virtual path with its filters.
@@ -175,6 +177,9 @@ func setDefaults(c *Config) {
 	if c.Stats.ChartMinutes == 0 {
 		c.Stats.ChartMinutes = 60
 	}
+	if c.Stats.ApiHealthWindowSeconds == 0 {
+		c.Stats.ApiHealthWindowSeconds = 300
+	}
 	if c.Cache.CDNURLAutoRepair == nil {
 		t := true
 		c.Cache.CDNURLAutoRepair = &t
@@ -200,12 +205,16 @@ func setDefaults(c *Config) {
 		c.Cache.CircuitBreakerFailures = &n
 	}
 	if c.Cache.CircuitBreakerWindowSec == nil {
-		n := 60
+		n := 600
 		c.Cache.CircuitBreakerWindowSec = &n
 	}
 	if c.Cache.CircuitBreakerStaleMin == nil {
 		n := 5
 		c.Cache.CircuitBreakerStaleMin = &n
+	}
+	if c.Cache.CircuitBreakerMaxStaleMinutes == nil {
+		n := 60
+		c.Cache.CircuitBreakerMaxStaleMinutes = &n
 	}
 	if c.Cache.NegativeCacheMaxEntries == nil {
 		n := 5000
@@ -282,7 +291,10 @@ func validate(c *Config) error {
 		return fmt.Errorf("stats.retention_hours must be 1–720, got %d", c.Stats.RetentionHours)
 	}
 	if c.Stats.ChartMinutes < 1 || c.Stats.ChartMinutes > 1440 {
-		return fmt.Errorf("stats.chart_minutes must be 1–1440, got %d", c.Stats.ChartMinutes)
+		return fmt.Errorf("stats.chart_minutes must be 1-1440, got %d", c.Stats.ChartMinutes)
+	}
+	if c.Stats.ApiHealthWindowSeconds < 60 || c.Stats.ApiHealthWindowSeconds > 3600 {
+		return fmt.Errorf("stats.api_health_window_seconds must be 60-3600, got %d", c.Stats.ApiHealthWindowSeconds)
 	}
 	if c.Cache.CDNURLRepairRetries != nil {
 		r := *c.Cache.CDNURLRepairRetries
@@ -324,6 +336,12 @@ func validate(c *Config) error {
 		r := *c.Cache.CircuitBreakerStaleMin
 		if r < 1 || r > 60 {
 			return fmt.Errorf("cache.circuit_breaker_stale_minutes must be 1–60, got %d", r)
+		}
+	}
+	if c.Cache.CircuitBreakerMaxStaleMinutes != nil {
+		r := *c.Cache.CircuitBreakerMaxStaleMinutes
+		if r < 5 || r > 1440 {
+			return fmt.Errorf("cache.circuit_breaker_max_stale_minutes must be 5–1440, got %d", r)
 		}
 	}
 	if c.Cache.NegativeCacheMaxEntries != nil {

@@ -18,7 +18,7 @@
     padding: 2rem 1rem;
   }
   .container {
-    max-width: 800px;
+    max-width: 1200px;
     width: 100%;
   }
   .header {
@@ -68,6 +68,28 @@
   td:last-child {
     color: #e2e8f0;
     width: 60%;
+  }
+  /* Scrollable data table (e.g. "Failed links"): full text, both axes scrollable.
+     The section title row is sticky so it stays put; the table scrolls under it. */
+  .failed-table-wrap {
+    overflow: auto;
+    max-height: 24rem;
+    margin-bottom: 1.5rem;
+  }
+  .failed-table {
+    margin-bottom: 0;
+  }
+  .failed-table th,
+  .failed-table td {
+    white-space: nowrap;
+    padding: 0.4rem 0.8rem;
+  }
+  .failed-table td:first-child,
+  .failed-table td:last-child {
+    width: auto;
+  }
+  .failed-title-table {
+    margin-bottom: 0;
   }
   .link-row td {
     font-family: inherit;
@@ -235,9 +257,9 @@
   <table>
     <tr><th colspan="2">Throttle</th></tr>
     <tr><td>Rate limit</td><td>{{.RequestsPerMinute}} req/min</td></tr>
-    <tr><td>Total API calls</td><td>{{.APICallsTotal}}</td></tr>
-    <tr><td>Successful calls</td><td>{{.APISuccessfulCalls}}</td></tr>
-    <tr><td>Failed calls</td><td>{{if .APIFailedCalls}}<span style="color:#f87171">{{.APIFailedCalls}}</span>{{else}}{{.APIFailedCalls}}{{end}}</td></tr>
+    <tr><td>Total API calls (all)</td><td>{{.APICallsTotal}}</td></tr>
+    <tr><td>Successful (all)</td><td>{{.APISuccessfulCalls}}</td></tr>
+    <tr><td>Failed (all)</td><td>{{if .APIFailedCalls}}<span style="color:#f87171">{{.APIFailedCalls}}</span>{{else}}{{.APIFailedCalls}}{{end}}</td></tr>
     <tr><td>Calls last minute</td><td>{{.APICallsLastMinute}}</td></tr>
   </table>
 
@@ -250,6 +272,7 @@
 
   <table>
     <tr><th colspan="2">Sync</th></tr>
+    <tr><td>Status</td><td>{{if .SyncInProgress}}<span style="color:#fbbf24">🔄 Syncing…</span>{{else}}Idle{{end}}</td></tr>
     <tr><td>Interval</td><td>{{.SyncIntervalMinutes}} min</td></tr>
     <tr><td>Page size</td><td>{{if eq .SyncListPageSize 0}}—{{else}}{{.SyncListPageSize}} items{{end}}</td></tr>
     <tr><td>Last sync</td><td>{{if .APIBad}}<span style="color:#f87171">⚠</span> {{end}}{{.LastSyncTime}}</td></tr>
@@ -257,16 +280,56 @@
   </table>
 
   <table>
+    <tr><th colspan="2">API Health</th></tr>
+    <tr><td>Status</td><td>
+      {{if .APIHealth.TooFew}}<span style="color:#94a3b8">⚪ Insufficient data</span>
+      {{else if .APIHealth.Degraded}}<span style="color:#fbbf24">🟠 Degraded</span>
+      {{else}}<span style="color:#22c55e">🟢 Healthy</span>{{end}}
+    </td></tr>
+    <tr><td>Calls (last 5 min)</td><td>{{.APIHealth.Samples}}</td></tr>
+    <tr><td>Successes</td><td>{{.APIHealth.Successes}}</td></tr>
+    <tr><td>Failures</td><td>{{if .APIHealth.Failures}}<span style="color:#f87171">{{.APIHealth.Failures}}</span>{{else}}0{{end}}</td></tr>
+    <tr><td>Success rate</td><td>{{.APIHealth.Percent}}</td></tr>
+    <tr><td>Last success</td><td>{{.APIHealth.LastSuccessDisplay}}</td></tr>
+    <tr><td>Last failure</td><td>{{.APIHealth.LastFailureDisplay}}</td></tr>
+  </table>
+
+  {{if .Quarantined}}
+  <table class="failed-title-table">
+    <tr><th colspan="6">Failed links</th></tr>
+  </table>
+  <div class="failed-table-wrap">
+    <table class="failed-table">
+      <tr>
+        <th style="text-align:left">Status</th>
+        <th style="text-align:left">Item</th>
+        <th style="text-align:left">Error</th>
+        <th>Failures</th>
+        <th>Last tripped</th>
+        <th>Next retry</th>
+      </tr>
+      {{range .Quarantined}}
+      <tr>
+        <td>{{if .Tripped}}<span style="color:#f87171">Quarantined</span>{{else}}<span style="color:#fbbf24">Failing ({{.Failures}})</span>{{end}}</td>
+        <td title="{{.Label}}">{{.Label}}</td>
+        <td style="font-size:0.8rem">
+          {{if .Tripped}}{{if eq .ErrKind "database_error"}}<span style="color:#f87171">TorBox returned {{.ErrorCode}} — it cannot generate a download link for this item (likely orphaned/expired on TorBox). Remove and re-add it.</span>{{else}}<span style="color:#fbbf24">Last error: {{if .ErrorCode}}{{.ErrorCode}}{{else}}{{.LastError}}{{end}} — retrying automatically.</span>{{end}}{{else}}<span style="color:#fbbf24">Still failing — not yet quarantined. Last error: {{if .ErrorCode}}{{.ErrorCode}}{{else}}{{.LastError}}{{end}}.</span>{{end}}
+        </td>
+        <td>{{.Failures}}</td>
+        <td>{{if not .TrippedAt.IsZero}}{{.TrippedAt.Format "15:04:05"}}{{else}}—{{end}}</td>
+        <td>{{if not .StaleUntil.IsZero}}{{.StaleUntil.Format "15:04:05"}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{end}}
+
+  <table>
     <tr><th colspan="2">TorBox Account</th></tr>
     {{if .TBHasAccount}}
-    <tr><td>Plan</td><td>{{.TBPlanName}} (tier {{.TBPlan}}){{if .TBIsPremium}} ⭐ Premium{{end}}</td></tr>
+    <tr><td>Plan</td><td>{{if .TBPlanName}}{{.TBPlanName}} (tier {{.TBPlan}}){{else}}Tier {{.TBPlan}}{{end}}{{if .TBIsPremium}} ⭐ Premium{{end}}</td></tr>
     <tr><td>Email</td><td>{{.TBEmail}}</td></tr>
-    <tr><td>Premium download limit</td><td>{{.TBPremiumDLimit}}</td></tr>
-    <tr><td>Total downloaded</td><td>{{.TBTotalDownloaded}}</td></tr>
-    <tr><td>Total egressed</td><td>{{.TBTotalEgressed}}</td></tr>
-    <tr><td>Overall ratio</td><td>{{printf "%.2f" .TBOverallRatio}}</td></tr>
     <tr><td>Premium expires</td><td>{{if .TBPremiumExpires}}{{.TBPremiumExpires}}{{else}}—{{end}}</td></tr>
-    <tr><td>Referral code</td><td>{{.TBReferralCode}}</td></tr>
     <tr><td>Account created</td><td>{{.TBCreatedAt}}</td></tr>
     {{else}}<tr><td>Status</td><td>User info unavailable</td></tr>{{end}}
   </table>
@@ -347,20 +410,22 @@
     'gc cycles': '#a78bfa',
     'heap objects': '#f97316',
     'db locks': '#ec4899',
+    'api health': '#4ade80',
   };
 
   // Metric definitions: label, dbKey, unit, color
   const METRICS = [
-    { label: 'success',     key: 'api_calls_success',      unit: '',   color: COLORS.success },
-    { label: 'failed',      key: 'api_calls_failed',       unit: '',   color: COLORS.failed },
-    { label: '429s',        key: 'api_calls_429',          unit: '',   color: COLORS['429s'] },
+    { label: 'success',     key: 'api_calls_success',      unit: '',   color: COLORS.success,     min: 0 },
+    { label: 'failed',      key: 'api_calls_failed',       unit: '',   color: COLORS.failed,      min: 0 },
+    { label: '429s',        key: 'api_calls_429',          unit: '',   color: COLORS['429s'],     min: 0 },
     { label: 'sys mem',     key: 'sys_mb',                 unit: 'MB', color: COLORS['sys mem'] },
     { label: 'alloc',       key: 'alloc_mb',                unit: 'MB', color: COLORS.alloc },
     { label: 'gc cycles',   key: 'gc_cycles',              unit: '',   color: COLORS['gc cycles'] },
     { label: 'heap objects',key: 'heap_objects',           unit: '',   color: COLORS['heap objects'] },
-    { label: 'db locks',    key: 'db_lock_errors',          unit: '',   color: COLORS['db locks'] },
-    { label: 'neg cache',   key: 'negative_cache_entries', unit: '',   color: COLORS['neg cache'] },
-    { label: 'breaker',     key: 'circuit_breaker_entries',unit: '',   color: COLORS.breaker },
+    { label: 'db locks',    key: 'db_lock_errors',          unit: '',   color: COLORS['db locks'], min: 0 },
+    { label: 'neg cache',   key: 'negative_cache_entries', unit: '',   color: COLORS['neg cache'], min: 0 },
+    { label: 'breaker',     key: 'circuit_breaker_entries',unit: '',   color: COLORS.breaker,    min: 0 },
+    { label: 'api health',  key: 'requestdl_success_ratio',unit: '%',  color: COLORS['api health'], min: 0, max: 100 },
   ];
 
   let charts = [];
@@ -435,6 +500,8 @@
             },
             y: {
               display: true,
+              min: metric.min,
+              max: metric.max,
               grid: { color: '#1e293b', drawTicks: false },
               ticks: {
                 font: { size: 9 },

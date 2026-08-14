@@ -365,6 +365,11 @@ func TestSyncWorker_InFlightGuard_SkipsConcurrentSync(t *testing.T) {
 	}()
 	<-started
 
+	// While the first sync is in flight, Status() must report InProgress.
+	if !sw.Status().InProgress {
+		t.Error("expected InProgress=true while a sync is running")
+	}
+
 	// A second SyncNow must be skipped immediately by the in-flight guard.
 	secondDone := make(chan struct{})
 	go func() {
@@ -383,6 +388,11 @@ func TestSyncWorker_InFlightGuard_SkipsConcurrentSync(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first sync did not finish after release")
+	}
+
+	// After the sync finishes, Status() must report not in progress.
+	if sw.Status().InProgress {
+		t.Error("expected InProgress=false after sync finished")
 	}
 }
 

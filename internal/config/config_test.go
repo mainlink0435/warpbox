@@ -925,3 +925,62 @@ library:
 		t.Fatal("expected error for invalid min_file_size")
 	}
 }
+
+func TestCacheCircuitBreakerMaxStaleMinutesDefault(t *testing.T) {
+	content := []byte("torbox:\n  api_key: \"test-key\"\n")
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Cache.CircuitBreakerMaxStaleMinutes == nil {
+		t.Fatal("expected a default for circuit_breaker_max_stale_minutes")
+	}
+	if *cfg.Cache.CircuitBreakerMaxStaleMinutes != 60 {
+		t.Errorf("default = %d, want 60", *cfg.Cache.CircuitBreakerMaxStaleMinutes)
+	}
+}
+
+func TestCacheCircuitBreakerMaxStaleMinutesValidation(t *testing.T) {
+	for _, v := range []int{4, 1441} {
+		yaml := fmt.Sprintf("torbox:\n  api_key: \"key\"\ncache:\n  circuit_breaker_max_stale_minutes: %d\n", v)
+		tmp := t.TempDir() + "/config.yml"
+		if err := os.WriteFile(tmp, []byte(yaml), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(tmp); err == nil {
+			t.Errorf("expected error for circuit_breaker_max_stale_minutes=%d", v)
+		}
+	}
+}
+
+func TestStatsApiHealthWindowSecondsDefault(t *testing.T) {
+	content := []byte("torbox:\n  api_key: \"test-key\"\n")
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Stats.ApiHealthWindowSeconds != 300 {
+		t.Errorf("default api_health_window_seconds = %d, want 300", cfg.Stats.ApiHealthWindowSeconds)
+	}
+}
+
+func TestStatsApiHealthWindowSecondsValidation(t *testing.T) {
+	for _, v := range []int{59, 3601} {
+		yaml := fmt.Sprintf("torbox:\n  api_key: \"key\"\nstats:\n  api_health_window_seconds: %d\n", v)
+		tmp := t.TempDir() + "/config.yml"
+		if err := os.WriteFile(tmp, []byte(yaml), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(tmp); err == nil {
+			t.Errorf("expected error for api_health_window_seconds=%d", v)
+		}
+	}
+}

@@ -257,6 +257,20 @@ func (s *Store) GetFileByPath(path string) (*FileRecord, error) {
 	return &f, nil
 }
 
+// GetFileLabelByItemID returns a display label (the file path) for an item, used
+// by the landing page "failed links" list. Returns "" if the item has no rows.
+func (s *Store) GetFileLabelByItemID(itemID int64) (string, error) {
+	var path string
+	err := s.db.QueryRow(`SELECT path FROM files WHERE item_id = ? ORDER BY id DESC LIMIT 1`, itemID).Scan(&path)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying item label: %w", err)
+	}
+	return path, nil
+}
+
 // GetFileAlternatives returns all file records for the given virtual path
 // except the primary (highest id) record. Use this for CDN URL fallback
 // when the primary TorBox item is no longer accessible.
@@ -342,6 +356,21 @@ func (s *Store) SetCDNURL(internalID int64, cdnURL string, expiresAt time.Time) 
 
 	slog.Debug("db write duration", "method", "SetCDNURL", "duration_ms", time.Since(start).Milliseconds(), "error", err)
 	return err
+}
+
+// SetFileSize corrects a file record's size (used when the CDN reports a true
+// size via a 416 Content-Range that differs from the stored one).
+func (s *Store) SetFileSize(internalID, size int64) error {
+	start := time.Now()
+	_, err := s.db.Exec(`
+		UPDATE files SET size = ?, updated = datetime('now')
+		WHERE id = ?
+	`, size, internalID)
+	if err != nil {
+		return fmt.Errorf("setting file size: %w", err)
+	}
+	slog.Debug("db write duration", "method", "SetFileSize", "duration_ms", time.Since(start).Milliseconds())
+	return nil
 }
 
 // GetCDNURL returns a cached CDN URL for a file identified by its internal ID.

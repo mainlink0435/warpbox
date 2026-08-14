@@ -863,3 +863,48 @@ func TestMigrateAutoRecreatesV1DB(t *testing.T) {
 		t.Fatal("migrated db should allow upserts and lookups")
 	}
 }
+
+func TestSetFileSize(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	if err := s.UpsertFile(FileRecord{ItemID: 1, FileID: 1, Source: SourceTorrent, Name: "a.mkv", Path: "/a.mkv", Size: 100}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.GetFileByPath("/a.mkv")
+	if err != nil || f == nil {
+		t.Fatal("file should exist")
+	}
+	if err := s.SetFileSize(f.ID, 200); err != nil {
+		t.Fatalf("SetFileSize failed: %v", err)
+	}
+	f2, err := s.GetFileByPath("/a.mkv")
+	if err != nil || f2 == nil {
+		t.Fatal("file should exist after update")
+	}
+	if f2.Size != 200 {
+		t.Errorf("size = %d, want 200", f2.Size)
+	}
+}
+
+func TestGetFileLabelByItemID(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	if err := s.UpsertFile(FileRecord{ItemID: 55, FileID: 1, Source: SourceTorrent, Name: "x.mkv", Path: "/dir/x.mkv", Size: 100}); err != nil {
+		t.Fatal(err)
+	}
+	label, err := s.GetFileLabelByItemID(55)
+	if err != nil {
+		t.Fatalf("GetFileLabelByItemID failed: %v", err)
+	}
+	if label != "/dir/x.mkv" {
+		t.Errorf("label = %q, want /dir/x.mkv", label)
+	}
+	// Unknown item → empty, no error.
+	label, err = s.GetFileLabelByItemID(999)
+	if err != nil {
+		t.Fatalf("GetFileLabelByItemID(999) failed: %v", err)
+	}
+	if label != "" {
+		t.Errorf("unknown item label = %q, want empty", label)
+	}
+}

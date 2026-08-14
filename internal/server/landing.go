@@ -62,9 +62,12 @@ type LandingData struct {
 	APICallsLastMinute   int
 	LastSyncTime         string // human-readable time of last successful sync
 	LastSyncError        string // empty if last sync succeeded
+	SyncInProgress       bool   // true if a metadata sync cycle is currently running
 	APIBad               bool   // true if there's a sync error to highlight
 	NegativeCacheSize    int    // Current entries in the negative cache
 	CircuitBreakerSize   int    // Current entries in the circuit breaker
+	Quarantined          []QuarantinedItem // "failed links" — items quarantined by the circuit breaker
+	APIHealth            APIHealth // requestdl health over the rolling window
 	DBLockErrors         int64
 
 	// Cache config fields
@@ -96,19 +99,13 @@ type LandingData struct {
 	CSRFToken string
 
 	// TorBox account fields
-	TBUserID           int64
-	TBEmail            string
-	TBPlan             int
-	TBPlanName         string
-	TBIsPremium        bool
-	TBPremiumExpires   string
-	TBCreatedAt        string
-	TBReferralCode     string
-	TBPremiumDLimit    int64
-	TBTotalDownloaded  int64
-	TBTotalEgressed    int64
-	TBOverallRatio     float64
-	TBHasAccount       bool // whether user info was successfully fetched
+	TBEmail           string
+	TBPlan            int
+	TBPlanName        string
+	TBIsPremium       bool
+	TBPremiumExpires  string
+	TBCreatedAt       string
+	TBHasAccount      bool // whether user info was successfully fetched
 }
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
@@ -144,9 +141,11 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	lastSyncTime := ""
 	lastSyncErr := ""
 	apiBad := false
+	syncInProgress := false
 	if s.syncStatus != nil {
 		st := s.syncStatus()
 		lastSyncErr = st.LastError
+		syncInProgress = st.InProgress
 		if lastSyncErr != "" {
 			apiBad = true
 		}
@@ -159,6 +158,8 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 
 	negCacheSize := s.NegativeCacheSize()
 	cbSize := s.CircuitBreakerSize()
+	quarantined := s.QuarantinedItems()
+	apiHealth := s.requestdlHealth()
 
 	autoRepair := "off"
 	if s.cfg.CDNURLAutoRepair {
@@ -192,9 +193,12 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		APICallsLastMinute:   throttleStats.CallsLastMinute,
 		LastSyncTime:         lastSyncTime,
 		LastSyncError:        lastSyncErr,
+		SyncInProgress:       syncInProgress,
 		APIBad:               apiBad,
 		NegativeCacheSize:    negCacheSize,
 		CircuitBreakerSize:   cbSize,
+		Quarantined:          quarantined,
+		APIHealth:            apiHealth,
 		DBLockErrors:         s.store.DBLockErrors(),
 
 		// Cache config
@@ -228,23 +232,15 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ui := s.TorBoxUserInfo(); ui != nil {
-		premiumExpires := ""
-		if ui.PremiumExpires != nil {
-			premiumExpires = *ui.PremiumExpires
-		}
 		data.TBHasAccount = true
-		data.TBUserID = ui.ID
 		data.TBEmail = ui.Email
 		data.TBPlan = ui.Plan
-		data.TBPlanName = ui.PlanName
-		data.TBIsPremium = ui.Premium
-		data.TBPremiumExpires = premiumExpires
-		data.TBCreatedAt = ui.CreatedAt
-		data.TBReferralCode = ui.ReferralCode
-		data.TBPremiumDLimit = ui.PremiumDownloadLimit
-		data.TBTotalDownloaded = ui.TotalDownloaded
-		data.TBTotalEgressed = ui.TotalEgressed
-		data.TBOverallRatio = ui.OverallRatio
+		data.TBPlanName = planName(ui.Plan)
+		data.TBIsPremium = ui.IsSubscribed
+		if ui.PremiumExpiresAt != nil {
+			data.TBPremiumExpires = formatTBDate(*ui.PremiumExpiresAt)
+		}
+		data.TBCreatedAt = formatTBDate(ui.CreatedAt)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -254,15 +250,20 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// formatDuration returns a human-readable duration string like "2h34m12s".
+// formatDuration returns a human-readable duration string like "16d16h32m55s".
 func formatDuration(d time.Duration) string {
 	d = d.Round(time.Second)
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
 	h := d / time.Hour
 	d -= h * time.Hour
 	m := d / time.Minute
 	d -= m * time.Minute
 	s := d / time.Second
 
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm%ds", days, h, m, s)
+	}
 	if h > 0 {
 		return fmt.Sprintf("%dh%dm%ds", h, m, s)
 	}
@@ -270,6 +271,34 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+// planName returns the human-readable TorBox plan name for a plan tier.
+// TorBox reports the plan as an integer only (per the official SDK):
+// 0=Free, 1=Essential, 2=Pro, 3=Standard. Unknown tiers return "".
+func planName(plan int) string {
+	switch plan {
+	case 0:
+		return "Free"
+	case 1:
+		return "Essential"
+	case 2:
+		return "Pro"
+	case 3:
+		return "Standard"
+	default:
+		return ""
+	}
+}
+
+// formatTBDate renders an RFC3339 timestamp as a short readable date
+// (e.g. "12 May 2026"). It returns the input unchanged if it cannot be parsed.
+func formatTBDate(iso string) string {
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("2 Jan 2006")
 }
 
 // handleChartJS serves the embedded Chart.js bundle at /chart.umd.min.js.

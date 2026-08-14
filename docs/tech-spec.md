@@ -239,8 +239,8 @@ Examines three layers before making an API call:
 
 2. **Circuit breaker check.** `isTorrentStale(itemID)`:
    - Looks up the `torrentFailureTracker` for this item ID.
-   - If `time.Now().Before(tracker.staleUntil)`, return error — the API call is skipped. A warning is logged.
-   - If the stale period has expired, delete the tracker (auto-reset) and proceed.
+   - If `time.Now().Before(tracker.staleUntil)`, return error — the API call is skipped (logged at Debug).
+   - If the stale period has expired, re-arm a short probe lock (`breakerProbeInterval`, 15s) and allow **one** half-open probe; concurrent callers are still skipped while it runs.
 
 3. **API call with retry.** `getCDNURLWithRetry(source, itemID, fileID)` — see below.
 
@@ -250,20 +250,23 @@ Examines three layers before making an API call:
 
 - **Max attempts** = `cdn_url_retry_attempts + 1` (default 2 — 1 initial + 1 retry).
 - Each attempt enqueues a `throttle.Request` that calls `GetDownloadURL()` (torrent) or `GetUsenetDownloadURL()` (usenet) depending on source.
-- **Retryable errors:** HTTP 429 or 5xx (detected by string matching `"unexpected status 429"` or `"unexpected status 5"`).
+- **Retryable errors:** HTTP 429 or 5xx (detected by string matching `"unexpected status 429"` or `"unexpected status 5"`). Non-200 errors now surface the API error code (e.g. `torbox: unexpected status 500 (DATABASE_ERROR)`, `(BAD_TOKEN)`) for classification.
 - **Backoff:** Exponential `baseBackoff * 2^attempt` where `baseBackoff = cdn_url_retry_backoff` seconds (default 1s).
 - **429 special backoff:** Fixed 30-second sleep (regardless of attempt number) — once TorBox rate-limits, aggressive retries would make it worse.
-- **Non-retryable or exhausted:** Call `recordTorrentFailure(itemID)` (see circuit breaker below), return error.
+- **Non-retryable or exhausted:** Classify via `classifyTorboxError` (auth / transient / database_error); skip `recordTorrentFailure` for auth (bad token); otherwise call `recordTorrentFailure(itemID, kind, err)`, return error.
 
 ### Circuit Breaker (`recordTorrentFailure`)
 
 Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
 
-- **Data:** `torrentFailureTracker{failures []time.Time, staleUntil time.Time}`
-- **Sliding window:** Failures older than `CircuitBreakerWindowSec` (default 60s) are pruned before counting.
+- **Data:** `torrentFailureTracker{failures []time.Time, staleUntil time.Time, errKind, lastErr, errorCode, trippedAt, escalations, quarantineNotified}` — keyed by item id **only** (never hash/path), so a re-added torrent (new id) never inherits quarantine.
+- **Sliding window:** Failures older than `CircuitBreakerWindowSec` (default 600s) are pruned before counting. The longer window means a persistently-failing item at low request rate (throttled by the negative cache) trips the breaker, not just burst storms.
 - **Threshold:** `CircuitBreakerFailures` failures within the window (default 5).
-- **Trip:** When threshold is reached, `staleUntil = now + CircuitBreakerStaleMin` (default 5 minutes). A warning is logged with full context.
-- **Auto-reset:** After the stale period expires, the next `isTorrentStale()` call cleans up the tracker.
+- **Trip:** When threshold is reached, `staleUntil = now + staleMin`. A warning is logged with full context.
+- **Escalation (item-scoped only):** For `database_error` failures while the API is otherwise healthy (`!globalDegraded()`), the stale window doubles each re-trip (`5m → 10m → 20m → …`) capped by `circuit_breaker_max_stale_minutes` (default 60). When the cap is reached, a single "likely orphaned on TorBox — remove and re-add" warning is logged. Transient (429/network) and global-flap failures trip the base window only and never label the item "dead".
+- **Global health gate:** A rolling window of requestdl outcomes (`globalHealthWindow` 5m) flags a transient TorBox-wide outage (`globalDegraded()`); during it, item failures are treated as transient and never escalated.
+- **Half-open probe:** After a stale window expires, one probe is allowed; success clears the tracker (`clearTorrentFailure`), failure re-escalates.
+- **Sync-driven pruning:** After each successful sync, `PruneBreakerForMissingItems` drops trackers/negative-cache entries for item ids no longer in the store, so removed or re-added items are not stuck in quarantine.
 - **Map limits:** `circuit_breaker_max_entries` (default 2000). Swept every cleanup interval — excess entries are evicted by oldest `staleUntil`.
 
 ### CDN Proxy (`streamFileContent`)
@@ -449,7 +452,9 @@ func (c *Client) listGeneric(ctx, endpoint, label string, params ListFilesParams
 
 **`TorrentFile`** (7 fields): `ID int64`, `Name string`, `Size int64`, `MimeType string`, `S3Path string`, `ShortName string`, `MD5 *string`.
 
-**`UserInfo`** (15 fields): `ID int64`, `AuthID string`, `Email string`, `Plan int`, `PlanName string`, `Premium bool`, `PremiumExpires *string`, `CreatedAt string`, `UpdatedAt string`, `ReferralCode string`, `Registered bool`, `PremiumDownloadLimit int64`, `TotalDownloaded int64`, `TotalEgressed int64`, `OverallRatio float64`.
+**`UserInfo`** (8 fields): `ID int64`, `AuthID string`, `Email string`, `Plan int`, `IsSubscribed bool`, `PremiumExpiresAt *string`, `CreatedAt string`, `UpdatedAt string`.
+
+> Field names match the real TorBox `/user/me` response (verified against the official TorBox JS SDK, `TorBox-App/torbox-sdk-js`). The API reports the plan as an integer only — `0=Free`, `1=Essential`, `2=Pro`, `3=Standard` — and subscription state as `is_subscribed` (there is no `plan_name`, `premium`, or `premium_expires` field). The landing page derives the plan name from the tier via `planName()`.
 
 ### Internal `do()` Helper
 
@@ -701,6 +706,7 @@ This means charts show call rate per interval, not monotonically increasing tota
 | `heap_objects` | Gauge | `mem.HeapObjects` | Number of live heap objects |
 | `negative_cache_entries` | Gauge | `s.NegativeCacheSize()` | Current entries in the negative cache map |
 | `circuit_breaker_entries` | Gauge | `s.CircuitBreakerSize()` | Current entries in the circuit breaker map |
+| `requestdl_success_ratio` | Gauge | `requestdlHealth().Ratio × 100` | requestdl success rate (0–100) over the trailing 5-min window; omitted when no samples |
 
 ### Stats Recording (SQL)
 
@@ -821,8 +827,9 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | `cdn_url_retry_attempts` | int (pointer) | `1` | 0–10 | Max CDN URL fetch retry attempts |
 | `negative_cache_ttl_seconds` | int (pointer) | `30` | 1–300 | CDN error cache TTL |
 | `circuit_breaker_failures` | int (pointer) | `5` | 1–100 | Failures before trip |
-| `circuit_breaker_window_seconds` | int (pointer) | `60` | 1–3600 | Sliding window for counting failures |
+| `circuit_breaker_window_seconds` | int (pointer) | `600` | 1–3600 | Sliding window for counting failures (longer ⇒ persistent low-rate failures trip the breaker) |
 | `circuit_breaker_stale_minutes` | int (pointer) | `5` | 1–60 | Stale duration after trip |
+| `circuit_breaker_max_stale_minutes` | int (pointer) | `60` | 5–1440 | Max escalated stale window for persistent item-scoped failures |
 | `negative_cache_max_entries` | int (pointer) | `5000` | 100–50000 | Max negative cache entries |
 | `circuit_breaker_max_entries` | int (pointer) | `2000` | 50–20000 | Max circuit breaker entries |
 | `cleanup_interval_seconds` | int (pointer) | `60` | 10–3600 | Cache sweep interval |
@@ -857,6 +864,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | `interval_seconds` | int | `60` | 10–3600 | Stats snapshot interval |
 | `retention_hours` | int | `24` | 1–720 | Stats retention period |
 | `chart_minutes` | int | `60` | 1–1440 | Chart time window on landing page |
+| `api_health_window_seconds` | int | `300` | 60–3600 | Rolling window for the API-health indicator & flap detection |
 
 #### 8. `auth`
 | Key | Type | Default | Validation | Description |

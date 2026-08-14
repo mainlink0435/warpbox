@@ -178,6 +178,7 @@ func main() {
 		CircuitBreakerFailures:  *cfg.Cache.CircuitBreakerFailures,
 		CircuitBreakerWindowSec: *cfg.Cache.CircuitBreakerWindowSec,
 		CircuitBreakerStaleMin:  *cfg.Cache.CircuitBreakerStaleMin,
+		CircuitBreakerMaxStaleMin: *cfg.Cache.CircuitBreakerMaxStaleMinutes,
 		NegativeCacheMaxEntries:  *cfg.Cache.NegativeCacheMaxEntries,
 		CircuitBreakerMaxEntries: *cfg.Cache.CircuitBreakerMaxEntries,
 		CleanupIntervalSeconds:  *cfg.Cache.CleanupIntervalSeconds,
@@ -188,6 +189,7 @@ func main() {
 		StatsIntervalSeconds:    cfg.Stats.IntervalSeconds,
 		StatsRetentionHours:     cfg.Stats.RetentionHours,
 		StatsChartMinutes:       cfg.Stats.ChartMinutes,
+		APIHealthWindowSeconds:  cfg.Stats.ApiHealthWindowSeconds,
 	}
 	serverCfg.LevelVar = levelVar
 
@@ -203,6 +205,17 @@ func main() {
 		throttleQueue,
 	)
 	srv.SetSyncStatus(syncWorker.Status)
+
+	// After each successful sync, prune circuit-breaker/negative-cache entries
+	// for items that no longer exist (removed, or re-added under a new item id)
+	// so they don't linger in quarantine for a full stale window.
+	syncWorker.OnSyncDone = func(live []metadata.ItemDir) {
+		liveIDs := make(map[int64]struct{}, len(live))
+		for _, it := range live {
+			liveIDs[it.ItemID] = struct{}{}
+		}
+		srv.PruneBreakerForMissingItems(liveIDs)
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {

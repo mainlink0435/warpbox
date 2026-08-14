@@ -488,3 +488,130 @@ func TestListGeneric_RetriesPageInPlace(t *testing.T) {
 		t.Fatalf("expected the first two requests to both be offset 0 (in-place retry), got %v", offsets)
 	}
 }
+
+func TestGetDownloadURLSurfacesErrorCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"success":false,"error":"DATABASE_ERROR","detail":"There was an error processing your request. Please try again later.","data":null}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "test-key")
+	_, err := client.GetDownloadURL(context.Background(), 42, 7, false)
+	if err == nil {
+		t.Fatal("expected error from 500 response")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 500 (DATABASE_ERROR)") {
+		t.Errorf("error should surface the API code, got: %v", err)
+	}
+}
+
+func TestGetUserInfoSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("expected Bearer token, got %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path != "/v1/api/user/me" {
+			t.Errorf("expected /v1/api/user/me, got %s", r.URL.Path)
+		}
+
+		// Realistic payload using the API's actual field names (per the
+		// official TorBox JS SDK response mapping).
+		body := `{
+			"data": {
+				"id": 12345,
+				"auth_id": "tb-abc123",
+				"email": "ben.page+torbox@live.com",
+				"plan": 2,
+				"is_subscribed": true,
+				"premium_expires_at": "2026-06-12T00:00:00Z",
+				"created_at": "2026-05-12T04:33:22Z",
+				"updated_at": "2026-06-01T00:00:00Z"
+			},
+			"success": true
+		}`
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "test-key")
+	ui, err := client.GetUserInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetUserInfo failed: %v", err)
+	}
+	if ui.ID != 12345 {
+		t.Errorf("ID = %d, want 12345", ui.ID)
+	}
+	if ui.AuthID != "tb-abc123" {
+		t.Errorf("AuthID = %q", ui.AuthID)
+	}
+	if ui.Email != "ben.page+torbox@live.com" {
+		t.Errorf("Email = %q", ui.Email)
+	}
+	if ui.Plan != 2 {
+		t.Errorf("Plan = %d, want 2", ui.Plan)
+	}
+	if !ui.IsSubscribed {
+		t.Error("IsSubscribed = false, want true")
+	}
+	if ui.PremiumExpiresAt == nil || *ui.PremiumExpiresAt != "2026-06-12T00:00:00Z" {
+		t.Errorf("PremiumExpiresAt = %v, want non-nil 2026-06-12T00:00:00Z", ui.PremiumExpiresAt)
+	}
+	if ui.CreatedAt != "2026-05-12T04:33:22Z" {
+		t.Errorf("CreatedAt = %q", ui.CreatedAt)
+	}
+	if ui.UpdatedAt != "2026-06-01T00:00:00Z" {
+		t.Errorf("UpdatedAt = %q", ui.UpdatedAt)
+	}
+}
+
+func TestGetUserInfoNoPremiumExpiry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": 1,
+				"email": "free@example.com",
+				"plan": 0,
+				"is_subscribed": false,
+				"created_at": "2026-01-01T00:00:00Z",
+				"updated_at": "2026-01-01T00:00:00Z"
+			},
+			"success": true
+		}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "test-key")
+	ui, err := client.GetUserInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetUserInfo failed: %v", err)
+	}
+	if ui.Plan != 0 {
+		t.Errorf("Plan = %d, want 0", ui.Plan)
+	}
+	if ui.IsSubscribed {
+		t.Error("IsSubscribed = true, want false")
+	}
+	if ui.PremiumExpiresAt != nil {
+		t.Errorf("PremiumExpiresAt = %v, want nil for free account", ui.PremiumExpiresAt)
+	}
+}
+
+func TestGetUserInfoAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":null,"success":false,"error":"INVALID_TOKEN","detail":"Invalid API key"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "bad-key")
+	_, err := client.GetUserInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid token, got nil")
+	}
+	if !strings.Contains(err.Error(), "INVALID_TOKEN") {
+		t.Errorf("error should surface the API code, got: %v", err)
+	}
+}

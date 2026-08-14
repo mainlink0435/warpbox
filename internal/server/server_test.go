@@ -2,11 +2,18 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+// dbErr returns an item-scoped (DATABASE_ERROR) requestdl error.
+func dbErr() error {
+	return errors.New("torbox: unexpected status 500 (DATABASE_ERROR)")
+}
 
 func TestRecordTorrentFailure(t *testing.T) {
 	srv := testServer(t, Config{
@@ -17,7 +24,7 @@ func TestRecordTorrentFailure(t *testing.T) {
 
 	itemID := int64(42)
 
-	srv.recordTorrentFailure(itemID)
+	srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
 	tracker, exists := srv.torrentFailures[itemID]
 	if !exists {
 		t.Fatal("first failure: expected tracker to be created")
@@ -39,7 +46,7 @@ func TestRecordTorrentFailure_belowThreshold(t *testing.T) {
 
 	itemID := int64(42)
 	for i := 0; i < 4; i++ {
-		srv.recordTorrentFailure(itemID)
+		srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
 	}
 
 	tracker := srv.torrentFailures[itemID]
@@ -60,7 +67,7 @@ func TestRecordTorrentFailure_hitsThreshold(t *testing.T) {
 
 	itemID := int64(42)
 	for i := 0; i < 5; i++ {
-		srv.recordTorrentFailure(itemID)
+		srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
 	}
 
 	tracker := srv.torrentFailures[itemID]
@@ -93,7 +100,7 @@ func TestRecordTorrentFailure_prunesOldFailures(t *testing.T) {
 	srv.torrentFailures[itemID] = tracker
 	srv.torrentFailuresMu.Unlock()
 
-	srv.recordTorrentFailure(itemID)
+	srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
 
 	tracker = srv.torrentFailures[itemID]
 	if len(tracker.failures) != 1 {
@@ -131,7 +138,7 @@ func TestIsTorrentStale_staleActive(t *testing.T) {
 	srv.torrentFailuresMu.Unlock()
 }
 
-func TestIsTorrentStale_periodExpired(t *testing.T) {
+func TestIsTorrentStale_periodExpiredProbes(t *testing.T) {
 	srv := testServer(t)
 
 	srv.torrentFailuresMu.Lock()
@@ -141,14 +148,18 @@ func TestIsTorrentStale_periodExpired(t *testing.T) {
 	srv.torrentFailuresMu.Unlock()
 
 	if srv.isTorrentStale(42) {
-		t.Error("expired stale period: expected false")
+		t.Error("expired stale period: expected false (half-open probe allowed)")
 	}
 
 	srv.torrentFailuresMu.Lock()
-	if _, exists := srv.torrentFailures[42]; exists {
-		t.Error("expired stale: tracker should have been removed")
-	}
+	tracker, exists := srv.torrentFailures[42]
 	srv.torrentFailuresMu.Unlock()
+	if !exists {
+		t.Error("expired stale: tracker should remain (probe lock re-armed)")
+	}
+	if !tracker.staleUntil.After(time.Now()) {
+		t.Error("expired stale: probe lock should be re-armed into the future")
+	}
 }
 
 func TestIsTorrentStale_notYetStale(t *testing.T) {
@@ -504,6 +515,11 @@ func TestRecordStats_storesAllMetrics(t *testing.T) {
 		Version: "test",
 	})
 
+	// Seed requestdl outcomes so the api-health gauge is recorded.
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(false)
+
 	srv.recordStats()
 
 	since := time.Now().Add(-24 * time.Hour)
@@ -523,6 +539,7 @@ func TestRecordStats_storesAllMetrics(t *testing.T) {
 		"heap_objects",
 		"negative_cache_entries",
 		"circuit_breaker_entries",
+		"requestdl_success_ratio",
 	}
 
 	for _, name := range expectedMetrics {
@@ -588,5 +605,348 @@ func TestHandleStatsJSON_minutesFallback(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestClassifyTorboxError(t *testing.T) {
+	cases := []struct {
+		err  error
+		kind failureKind
+		code string
+	}{
+		{errors.New("torbox: unexpected status 500 (DATABASE_ERROR)"), failureKindDatabaseError, "DATABASE_ERROR"},
+		{errors.New("torbox: unexpected status 401 (BAD_TOKEN)"), failureKindAuth, "BAD_TOKEN"},
+		{errors.New("torbox: unexpected status 429"), failureKindTransient, ""},
+		{errors.New("torbox: unexpected status 500"), failureKindTransient, ""},
+		{errors.New("torbox: unexpected status 429 (RATE_LIMIT)"), failureKindTransient, "RATE_LIMIT"},
+		{errors.New("torbox: connection refused"), failureKindTransient, ""},
+		{nil, failureKindTransient, ""},
+	}
+	for _, c := range cases {
+		kind, code := classifyTorboxError(c.err)
+		if kind != c.kind || code != c.code {
+			t.Errorf("classify(%v) = (%q, %q), want (%q, %q)", c.err, kind, code, c.kind, c.code)
+		}
+	}
+}
+
+func TestRecordTorrentFailure_escalatesStaleWindow(t *testing.T) {
+	srv := testServer(t, Config{
+		CircuitBreakerFailures:    3,
+		CircuitBreakerWindowSec:   60,
+		CircuitBreakerStaleMin:    1,
+		CircuitBreakerMaxStaleMin: 4,
+	})
+	itemID := int64(7)
+	for i := 0; i < 3; i++ {
+		srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
+	}
+	srv.torrentFailuresMu.Lock()
+	t1 := srv.torrentFailures[itemID]
+	d1 := time.Until(t1.staleUntil)
+	esc1 := t1.escalations
+	srv.torrentFailuresMu.Unlock()
+	if d1 < 50*time.Second || d1 > 70*time.Second {
+		t.Errorf("first trip stale window = %v, want ~1m", d1)
+	}
+	if esc1 != 1 {
+		t.Errorf("escalations after first trip = %d, want 1", esc1)
+	}
+	// More failures escalate toward the cap (4m).
+	for i := 0; i < 6; i++ {
+		srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
+	}
+	srv.torrentFailuresMu.Lock()
+	t2 := srv.torrentFailures[itemID]
+	d2 := time.Until(t2.staleUntil)
+	esc2 := t2.escalations
+	srv.torrentFailuresMu.Unlock()
+	if d2 < 3*time.Minute || d2 > 5*time.Minute {
+		t.Errorf("escalated stale window = %v, want capped ~4m", d2)
+	}
+	if esc2 <= esc1 {
+		t.Errorf("escalations should increase: got %d (was %d)", esc2, esc1)
+	}
+}
+
+func TestRecordTorrentFailure_transientDoesNotEscalate(t *testing.T) {
+	srv := testServer(t, Config{
+		CircuitBreakerFailures:    3,
+		CircuitBreakerWindowSec:   60,
+		CircuitBreakerStaleMin:    1,
+		CircuitBreakerMaxStaleMin: 4,
+	})
+	itemID := int64(8)
+	for i := 0; i < 3; i++ {
+		srv.recordTorrentFailure(itemID, failureKindTransient, errors.New("torbox: unexpected status 429"))
+	}
+	srv.torrentFailuresMu.Lock()
+	tracker := srv.torrentFailures[itemID]
+	esc := tracker.escalations
+	notified := tracker.quarantineNotified
+	srv.torrentFailuresMu.Unlock()
+	if esc != 0 {
+		t.Errorf("transient: escalations should be 0, got %d", esc)
+	}
+	if notified {
+		t.Error("transient: should not emit quarantine-notified")
+	}
+}
+
+func TestRecordTorrentFailure_globalFlapDoesNotEscalate(t *testing.T) {
+	srv := testServer(t, Config{
+		CircuitBreakerFailures:    3,
+		CircuitBreakerWindowSec:   60,
+		CircuitBreakerStaleMin:    1,
+		CircuitBreakerMaxStaleMin: 4,
+	})
+	// Simulate a TorBox-wide outage: only failures in the health window.
+	for i := 0; i < globalHealthMinSamples; i++ {
+		srv.recordRequestdlOutcome(false)
+	}
+	if !srv.globalDegraded() {
+		t.Fatal("expected globalDegraded() true after all-failure window")
+	}
+	itemID := int64(9)
+	for i := 0; i < 3; i++ {
+		srv.recordTorrentFailure(itemID, failureKindDatabaseError, dbErr())
+	}
+	srv.torrentFailuresMu.Lock()
+	tracker := srv.torrentFailures[itemID]
+	esc := tracker.escalations
+	notified := tracker.quarantineNotified
+	kind := tracker.errKind
+	d := time.Until(tracker.staleUntil)
+	srv.torrentFailuresMu.Unlock()
+	if kind != failureKindTransient {
+		t.Errorf("global flap: errKind should be downgraded to transient, got %q", kind)
+	}
+	if esc != 0 {
+		t.Errorf("global flap: escalations should be 0, got %d", esc)
+	}
+	if notified {
+		t.Error("global flap: should not emit quarantine-notified")
+	}
+	if d < 50*time.Second || d > 70*time.Second {
+		t.Errorf("global flap: stale window = %v, want fixed base ~1m", d)
+	}
+}
+
+func TestQuarantinedItems(t *testing.T) {
+	srv := testServer(t)
+	now := time.Now()
+	srv.torrentFailuresMu.Lock()
+	srv.torrentFailures[42] = &torrentFailureTracker{
+		failures:    []time.Time{now.Add(-10 * time.Second), now.Add(-5 * time.Second), now},
+		staleUntil:  now.Add(5 * time.Minute),
+		errKind:     failureKindDatabaseError,
+		errorCode:   "DATABASE_ERROR",
+		lastErr:     dbErr().Error(),
+		trippedAt:   now,
+		escalations: 2,
+	}
+	srv.torrentFailuresMu.Unlock()
+
+	items := srv.QuarantinedItems()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 quarantined item, got %d", len(items))
+	}
+	it := items[0]
+	if it.ItemID != 42 {
+		t.Errorf("ItemID = %d, want 42", it.ItemID)
+	}
+	if it.Label != "item #42" {
+		t.Errorf("Label = %q, want fallback item #42", it.Label)
+	}
+	if it.ErrKind != failureKindDatabaseError {
+		t.Errorf("ErrKind = %q, want database_error", it.ErrKind)
+	}
+	if it.ErrorCode != "DATABASE_ERROR" {
+		t.Errorf("ErrorCode = %q, want DATABASE_ERROR", it.ErrorCode)
+	}
+	if it.Failures != 3 {
+		t.Errorf("Failures = %d, want 3", it.Failures)
+	}
+	if it.Escalations != 2 {
+		t.Errorf("Escalations = %d, want 2", it.Escalations)
+	}
+}
+
+func TestPruneBreakerForMissingItems(t *testing.T) {
+	srv := testServer(t)
+	srv.torrentFailuresMu.Lock()
+	srv.torrentFailures[1] = &torrentFailureTracker{staleUntil: time.Now().Add(time.Minute)}
+	srv.torrentFailures[2] = &torrentFailureTracker{staleUntil: time.Now().Add(time.Minute)}
+	srv.torrentFailures[3] = &torrentFailureTracker{staleUntil: time.Now().Add(time.Minute)}
+	srv.torrentFailuresMu.Unlock()
+
+	srv.negativeCacheMu.Lock()
+	srv.negativeCache["torrent:3:5"] = &negativeCacheEntry{err: errors.New("x"), expiresAt: time.Now().Add(time.Minute)}
+	srv.negativeCache["torrent:1:9"] = &negativeCacheEntry{err: errors.New("y"), expiresAt: time.Now().Add(time.Minute)}
+	srv.negativeCacheMu.Unlock()
+
+	srv.PruneBreakerForMissingItems(map[int64]struct{}{1: {}, 2: {}})
+
+	srv.torrentFailuresMu.Lock()
+	_, ok1 := srv.torrentFailures[1]
+	_, ok2 := srv.torrentFailures[2]
+	_, ok3 := srv.torrentFailures[3]
+	srv.torrentFailuresMu.Unlock()
+	if !ok1 || !ok2 {
+		t.Error("live items should remain in the breaker")
+	}
+	if ok3 {
+		t.Error("missing item should be pruned from the breaker")
+	}
+
+	srv.negativeCacheMu.Lock()
+	_, n1 := srv.negativeCache["torrent:3:5"]
+	_, n2 := srv.negativeCache["torrent:1:9"]
+	srv.negativeCacheMu.Unlock()
+	if n1 {
+		t.Error("missing item's negative-cache entry should be pruned")
+	}
+	if !n2 {
+		t.Error("live item's negative-cache entry should remain")
+	}
+}
+
+func TestRecordTorrentFailure_persistentLowRateTrips(t *testing.T) {
+	srv := testServer(t, Config{
+		CircuitBreakerFailures:     5,
+		CircuitBreakerWindowSec:    600,
+		CircuitBreakerStaleMin:     1,
+		CircuitBreakerMaxStaleMin:  4,
+	})
+	now := time.Now()
+	// 5 failures spread over ~8 minutes — previously pruned by a 60s window,
+	// now within the 600s window, so the next failure trips the breaker.
+	srv.torrentFailuresMu.Lock()
+	srv.torrentFailures[42] = &torrentFailureTracker{
+		failures: []time.Time{
+			now.Add(-8 * time.Minute),
+			now.Add(-6 * time.Minute),
+			now.Add(-4 * time.Minute),
+			now.Add(-2 * time.Minute),
+			now.Add(-1 * time.Minute),
+		},
+	}
+	srv.torrentFailuresMu.Unlock()
+
+	srv.recordTorrentFailure(42, failureKindDatabaseError, dbErr())
+
+	srv.torrentFailuresMu.Lock()
+	tracker := srv.torrentFailures[42]
+	tripped := !tracker.staleUntil.IsZero()
+	esc := tracker.escalations
+	srv.torrentFailuresMu.Unlock()
+	if !tripped {
+		t.Error("expected the breaker to trip after persistent low-rate failures")
+	}
+	if esc != 1 {
+		t.Errorf("escalations = %d, want 1", esc)
+	}
+}
+
+func TestRequestdlHealth(t *testing.T) {
+	srv := testServer(t)
+	if h := srv.requestdlHealth(); !h.TooFew {
+		t.Error("expected TooFew with no samples")
+	}
+
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(true)
+	srv.recordRequestdlOutcome(false)
+	srv.recordRequestdlOutcome(false)
+	h := srv.requestdlHealth()
+	if h.TooFew {
+		t.Error("expected not TooFew with 6 samples")
+	}
+	if h.Samples != 6 || h.Successes != 4 || h.Failures != 2 {
+		t.Errorf("got samples=%d succ=%d fails=%d, want 6/4/2", h.Samples, h.Successes, h.Failures)
+	}
+	if h.Ratio != 4.0/6.0 {
+		t.Errorf("ratio = %v, want 0.666", h.Ratio)
+	}
+	if h.Degraded {
+		t.Error("expected not degraded at 4/6 success")
+	}
+
+	// All failures → degraded.
+	srv = testServer(t)
+	for i := 0; i < globalHealthMinSamples; i++ {
+		srv.recordRequestdlOutcome(false)
+	}
+	h = srv.requestdlHealth()
+	if h.TooFew {
+		t.Error("expected not TooFew with enough all-failure samples")
+	}
+	if !h.Degraded {
+		t.Error("expected degraded with all failures")
+	}
+}
+
+func TestQuarantinedItems_listsTrippedAndFailing(t *testing.T) {
+	srv := testServer(t)
+	now := time.Now()
+	srv.torrentFailuresMu.Lock()
+	// Tripped item — quarantined.
+	srv.torrentFailures[1] = &torrentFailureTracker{
+		failures:   []time.Time{now},
+		staleUntil: now.Add(5 * time.Minute),
+		errKind:    failureKindDatabaseError,
+		errorCode:  "DATABASE_ERROR",
+		trippedAt:  now,
+	}
+	// Untripped (still accumulating) item — failing but not quarantined.
+	srv.torrentFailures[2] = &torrentFailureTracker{
+		failures: []time.Time{now},
+		errKind:  failureKindDatabaseError,
+	}
+	srv.torrentFailuresMu.Unlock()
+
+	items := srv.QuarantinedItems()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (tripped + failing), got %d", len(items))
+	}
+	for _, it := range items {
+		switch it.ItemID {
+		case 1:
+			if !it.Tripped {
+				t.Error("item 1 should be marked Tripped")
+			}
+		case 2:
+			if it.Tripped {
+				t.Error("item 2 should not be marked Tripped")
+			}
+		default:
+			t.Errorf("unexpected item id %d", it.ItemID)
+		}
+	}
+}
+
+func TestAPIHealthTimeDisplays(t *testing.T) {
+	var h APIHealth
+	if got := h.LastSuccessDisplay(); got != "—" {
+		t.Errorf("zero LastSuccessDisplay = %q, want —", got)
+	}
+	if got := h.LastFailureDisplay(); got != "—" {
+		t.Errorf("zero LastFailureDisplay = %q, want —", got)
+	}
+
+	when := time.Now().Add(-3 * time.Minute)
+	h = APIHealth{LastSuccess: when, LastFailure: when}
+	for name, got := range map[string]string{
+		"LastSuccessDisplay": h.LastSuccessDisplay(),
+		"LastFailureDisplay": h.LastFailureDisplay(),
+	} {
+		if !strings.Contains(got, "ago") {
+			t.Errorf("%s = %q, want relative 'ago' context", name, got)
+		}
+		if !strings.Contains(got, when.Format("Jan 2 15:04")) {
+			t.Errorf("%s = %q, want date present", name, got)
+		}
 	}
 }

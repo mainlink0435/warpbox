@@ -38,6 +38,11 @@ type SyncWorker struct {
 	OnItemsAdded   func(itemNames []string)
 	OnItemsRemoved func(itemNames []string)
 
+	// OnSyncDone is invoked at the end of each successful sync with the post-prune
+	// live item set, so the server can prune circuit-breaker/negative-cache entries
+	// for items that no longer exist (removed or re-added under a new item id).
+	OnSyncDone func(liveItems []ItemDir)
+
 	mu        sync.Mutex
 	parentCtx context.Context
 	cancel    context.CancelFunc
@@ -48,6 +53,7 @@ type SyncWorker struct {
 type SyncStatus struct {
 	LastSuccess time.Time // zero if never succeeded
 	LastError   string    // empty if last sync succeeded
+	InProgress  bool      // true while a sync cycle is executing
 }
 
 // Status returns the outcome of the most recent sync cycle.
@@ -57,6 +63,7 @@ func (w *SyncWorker) Status() SyncStatus {
 	return SyncStatus{
 		LastSuccess: w.lastSuccess,
 		LastError:   errorString(w.lastError),
+		InProgress:  w.syncing.Load(),
 	}
 }
 
@@ -444,6 +451,19 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 			slog.Warn("metadata sync: failed to fetch items for change detection", "error", err)
 		} else if len(newItems) > 0 {
 			w.fireChangeHooks(oldItems, newItems)
+		}
+	}
+
+	// Notify the server of the post-prune live item set so it can drop
+	// circuit-breaker / negative-cache entries for items that no longer exist
+	// (removed, or re-added under a new item id). A source whose fetch failed
+	// was not pruned, so its items remain in the store and stay in the live set.
+	if w.OnSyncDone != nil {
+		live, err := w.store.ListItemDirs()
+		if err != nil {
+			slog.Warn("metadata sync: failed to fetch items for sync-done hook", "error", err)
+		} else {
+			w.OnSyncDone(live)
 		}
 	}
 

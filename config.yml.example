@@ -62,12 +62,19 @@ cache:
   # Number of failures within the window before the breaker trips.
   # Default: 5
   # circuit_breaker_failures: 5
-  # Sliding window in seconds for counting failures.
-  # Default: 60
-  # circuit_breaker_window_seconds: 60
+  # Sliding window in seconds for counting failures. Longer windows let
+  # persistent low-rate failures (not just bursts) trip the breaker.
+  # Default: 600 (10 minutes)
+  # circuit_breaker_window_seconds: 600
   # Minutes the breaker stays tripped before auto-reset.
   # Default: 5
   # circuit_breaker_stale_minutes: 5
+  # Max escalated stale window (minutes) for an item that keeps failing while
+  # the API is otherwise healthy. The window doubles each retry cycle up to
+  # this cap, so a permanently-broken item stops being hammered. A transient
+  # global TorBox outage never escalates items.
+  # Must be 5-1440. Default: 60
+  # circuit_breaker_max_stale_minutes: 60
 
   # Memory management settings.
   # Default: 5000
@@ -216,3 +223,9 @@ stats:
   # How far back the landing page sparkline chart shows (in minutes).
   # Must be 1–1440. Default: 60
   # chart_minutes: 60
+
+  # Rolling window (in seconds) for the "API Health" indicator and for
+  # detecting a transient TorBox-wide outage (flap detection). Longer = smoother,
+  # more conservative; shorter = more responsive.
+  # Must be 60–3600. Default: 300 (5 minutes)
+  # api_health_window_seconds: 300

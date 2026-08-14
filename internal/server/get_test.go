@@ -24,6 +24,7 @@ type cdnResponse struct {
 	status      int
 	body        string
 	contentType string
+	headers     map[string]string
 }
 
 // newMockCDNServer returns an httptest.Server that cycles through the given
@@ -43,6 +44,9 @@ func newMockCDNServer(t *testing.T, responses []cdnResponse) *httptest.Server {
 		mu.Unlock()
 		if resp.contentType != "" {
 			w.Header().Set("Content-Type", resp.contentType)
+		}
+		for k, v := range resp.headers {
+			w.Header().Set(k, v)
 		}
 		w.WriteHeader(resp.status)
 		io.WriteString(w, resp.body)
@@ -404,5 +408,47 @@ func TestStreamFileContent_Routes429ToHang(t *testing.T) {
 	// The response body must be the binary data, not the 429 error text.
 	if string(body) != "real binary data" {
 		t.Errorf("expected body %q, got %q", "real binary data", string(body))
+	}
+}
+
+func TestStreamFileContent_CDN416CorrectsSize(t *testing.T) {
+	// CDN reports a true size (1000) smaller than the recorded size (5000).
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusRequestedRangeNotSatisfiable, headers: map[string]string{"Content-Range": "bytes */1000"}},
+	})
+	defer cleanup()
+
+	// Request a range beyond the CDN's true size but within the recorded size.
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=2000-2999")
+	srv.handleGet(w, req)
+
+	resp := w.Result()
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("expected 416, got %d", resp.StatusCode)
+	}
+
+	// The DB file size should be corrected to the CDN's true size.
+	f, err := srv.store.GetFileByPath("Test/test.mkv")
+	if err != nil || f == nil {
+		t.Fatalf("file lookup failed: %v", err)
+	}
+	if f.Size != 1000 {
+		t.Errorf("file size = %d, want corrected 1000", f.Size)
+	}
+
+	// The cached CDN URL should be invalidated.
+	url, err := srv.store.GetCDNURL(f.ID)
+	if err != nil || url != "" {
+		t.Errorf("cached CDN URL should be invalidated, got %q err %v", url, err)
+	}
+
+	// The file-level negative cache should be populated.
+	srv.negativeCacheMu.Lock()
+	_, nc := srv.negativeCache[cdnCacheKey(metadata.SourceTorrent, 1, 10)]
+	srv.negativeCacheMu.Unlock()
+	if !nc {
+		t.Error("expected negative cache entry for the size-mismatched file")
 	}
 }

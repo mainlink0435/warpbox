@@ -167,7 +167,7 @@ const logsHTMLStart = `<!DOCTYPE html>
     color: #e2e8f0;
     padding: 2rem 1rem;
   }
-  .container { max-width: 1000px; margin: 0 auto; }
+  .container { max-width: 1200px; margin: 0 auto; }
   h1 { font-size: 1.5rem; color: #38bdf8; margin-bottom: 0.5rem; }
   h1 .path { color: #94a3b8; font-weight: 400; }
   .nav { margin-bottom: 1rem; font-size: 0.85rem; }

@@ -66,9 +66,14 @@ This page covers common problems, what they mean, and how to fix them.
 | Cause | Fix |
 |-------|-----|
 | Circuit breaker tripped on a torrent | A torrent with repeated failures is quarantined (default 5 minutes). The breaker auto-resets. This is normal — it stops one bad torrent from burning the rate budget. |
-| TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries with exponential backoff (15s → 30s → 60s → 2min → 5min max on repeated 429s). |
+| Item shows in "Failed links" | The item repeatedly failed to obtain a CDN link from TorBox. If the error is `DATABASE_ERROR` and other items work, the item is likely orphaned/expired on TorBox — remove and re-add it in TorBox. The list refreshes on each metadata sync. |
+| TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries with exponential backoff (15s → 30s → 60s → 2min → 5min max on repeated 429s). During a global outage, items are treated as transient and never labelled "dead". |
 | `cdn_url_ttl_minutes` set too high | Stale URLs fail on first use, triggering repair. Default 120 minutes is safe. Reduce if you see frequent stale URL warnings. |
 | `CDN data transient error, backing off` in logs | The CDN data endpoint returned a transient error (429/5xx/disguised text body) after the URL was already recovered. Warpbox invalidates the URL, backs off, and retries — this is normal. No action needed. |
+
+## "I removed and re-added a torrent, but it's still stuck for a few minutes"
+
+Warpbox refreshes metadata on a schedule (`sync.interval_minutes`, default 5). When you re-add a torrent, TorBox assigns it a **new item id**, so warpbox picks it up at the next sync: the old (broken) item's rows are pruned, the new item's rows appear at the same path, and its fresh breaker state means it fetches a CDN link normally. Until that sync runs, the path still resolves to the old quarantined item and may look slow/stuck. No action needed — use the landing-page "Resync metadata" action to shorten the wait. Items that no longer exist are also cleared from the "Quarantined items" list automatically.
 
 ## Web UI not accessible
 
