@@ -5,7 +5,7 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.8.0] - 2026-08-14
 
 ### Added
 - Circuit-breaker quarantine escalation — a persistently-failing item's stale window now doubles each retry cycle up to `cache.circuit_breaker_max_stale_minutes` (default 60), so a permanently-broken torrent/usenet item stops being hammered
@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Items removed or re-added at TorBox clear quarantine automatically on the next metadata sync (breaker entries pruned for item ids no longer in the library)
 - Hang/poll entry log demoted from WARN to Info
 - TorBox account details on the landing page now show real data: the plan name is derived from the tier (Free/Essential/Pro/Standard), the premium-expiry date and subscription state (⭐) are no longer dropped by a JSON-tag mismatch, and dates are human-readable. The account table is trimmed to Plan, Email, Premium expires, and Account created (the previously-shown download/egress/ratio/referral rows came from fields the API doesn't return)
+- Landing-page chart sparkline axes are now pinned: count metrics (success/failed/429s/db locks/neg cache/breaker) start at 0, and the API-health ratio is capped at 0–100%
+
+### Changed
+- The "Failed links" table title now stays fixed while its body scrolls, and the logs page width is standardised to match the landing page (1200px)
 
 ## [v0.7.6] - 2026-08-04
 
@@ -166,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.6...HEAD
+[Unreleased]: /compare/v0.8.0...HEAD
+[v0.8.0]: /compare/v0.7.6...v0.8.0
 [v0.7.6]: /compare/v0.7.5...v0.7.6
 [v0.7.5]: /compare/v0.7.4...v0.7.5
 [v0.7.4]: /compare/v0.7.3...v0.7.4
