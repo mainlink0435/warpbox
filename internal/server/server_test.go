@@ -516,9 +516,9 @@ func TestRecordStats_storesAllMetrics(t *testing.T) {
 	})
 
 	// Seed requestdl outcomes so the api-health gauge is recorded.
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(false)
+	srv.recordOutcome(true)
+	srv.recordOutcome(true)
+	srv.recordOutcome(false)
 
 	srv.recordStats()
 
@@ -702,7 +702,7 @@ func TestRecordTorrentFailure_globalFlapDoesNotEscalate(t *testing.T) {
 	})
 	// Simulate a TorBox-wide outage: only failures in the health window.
 	for i := 0; i < globalHealthMinSamples; i++ {
-		srv.recordRequestdlOutcome(false)
+		srv.recordOutcome(false)
 	}
 	if !srv.globalDegraded() {
 		t.Fatal("expected globalDegraded() true after all-failure window")
@@ -854,12 +854,12 @@ func TestRequestdlHealth(t *testing.T) {
 		t.Error("expected TooFew with no samples")
 	}
 
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(true)
-	srv.recordRequestdlOutcome(false)
-	srv.recordRequestdlOutcome(false)
+	srv.recordOutcome(true)
+	srv.recordOutcome(true)
+	srv.recordOutcome(true)
+	srv.recordOutcome(true)
+	srv.recordOutcome(false)
+	srv.recordOutcome(false)
 	h := srv.requestdlHealth()
 	if h.TooFew {
 		t.Error("expected not TooFew with 6 samples")
@@ -877,7 +877,7 @@ func TestRequestdlHealth(t *testing.T) {
 	// All failures → degraded.
 	srv = testServer(t)
 	for i := 0; i < globalHealthMinSamples; i++ {
-		srv.recordRequestdlOutcome(false)
+		srv.recordOutcome(false)
 	}
 	h = srv.requestdlHealth()
 	if h.TooFew {
@@ -885,6 +885,30 @@ func TestRequestdlHealth(t *testing.T) {
 	}
 	if !h.Degraded {
 		t.Error("expected degraded with all failures")
+	}
+}
+
+// TestRecordTorBoxOutcome_countsRetriedRecoveredFailures verifies the public
+// health hook counts raw HTTP attempts — a call that fails twice and then
+// succeeds on a retry still registers 2 failures, so flapping provider
+// degradation no longer reads as "Failures: 0".
+func TestRecordTorBoxOutcome_countsRetriedRecoveredFailures(t *testing.T) {
+	srv := testServer(t)
+
+	// Simulate retry-and-recover: two non-200 responses then a 200.
+	srv.RecordTorBoxOutcome("/v1/api/torrents/mylist", 500, false)
+	srv.RecordTorBoxOutcome("/v1/api/torrents/mylist", 502, false)
+	srv.RecordTorBoxOutcome("/v1/api/torrents/mylist", 200, true)
+
+	h := srv.requestdlHealth()
+	if h.Samples != 3 {
+		t.Errorf("samples = %d, want 3", h.Samples)
+	}
+	if h.Failures != 2 {
+		t.Errorf("failures = %d, want 2 (retried-and-recovered failures must count)", h.Failures)
+	}
+	if h.Successes != 1 {
+		t.Errorf("successes = %d, want 1", h.Successes)
 	}
 }
 

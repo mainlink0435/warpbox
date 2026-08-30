@@ -49,6 +49,12 @@ type Client struct {
 	apiKey        string
 	httpClient    *http.Client
 	HTTP429Callback func() // Called when a 429 response is received
+
+	// OnOutcome is invoked for every HTTP attempt (before retry decisions) so
+	// callers can track raw TorBox API health — including attempts that later
+	// recover on a retry. endpoint is the request path, status is the HTTP
+	// status (0 for transport errors), ok is true only on HTTP 200. Nil-safe.
+	OnOutcome func(endpoint string, status int, ok bool)
 }
 
 // SetBaseURL overrides the API base URL. Used by tests to redirect traffic
@@ -440,11 +446,20 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 // internal helpers
 // ---------------------------------------------------------------------------
 
+// notify reports a single HTTP outcome (before any retry logic) to the
+// OnOutcome callback, if one is registered. Transport errors use status 0.
+func (c *Client) notify(endpoint string, status int, ok bool) {
+	if c.OnOutcome != nil {
+		c.OnOutcome(endpoint, status, ok)
+	}
+}
+
 // do executes an HTTP request, reads the full body, and returns the body bytes.
 // The response body is always closed before returning.
 func (c *Client) do(req *http.Request) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.notify(req.URL.Path, 0, false)
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return nil, fmt.Errorf("torbox: request %s %s failed: %w", req.Method, req.URL.Path, urlErr.Err)
@@ -465,6 +480,8 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Record the raw outcome before any retry/recovery logic downstream.
+		c.notify(req.URL.Path, resp.StatusCode, false)
 		// Log non-200 response bodies for diagnosis. TorBox usually includes
 		// a detail/error message in the JSON body explaining why (e.g. expired
 		// torrent, invalid file_id, rate limit, etc.).
@@ -491,6 +508,7 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("torbox: unexpected status %d", resp.StatusCode)
 	}
 
+	c.notify(req.URL.Path, 200, true)
 	return body, nil
 }
 

@@ -615,3 +615,78 @@ func TestGetUserInfoAPIError(t *testing.T) {
 		t.Errorf("error should surface the API code, got: %v", err)
 	}
 }
+
+func TestOnOutcome_callsOnSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(apiResponse[[]Torrent]{Data: []Torrent{}, Success: boolPtr(true)})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "test-key")
+	var ep string
+	var st int
+	var ok bool
+	client.OnOutcome = func(endpoint string, status int, okflag bool) {
+		ep, st, ok = endpoint, status, okflag
+	}
+
+	if _, err := client.ListTorrents(context.Background(), ListFilesParams{}); err != nil {
+		t.Fatalf("ListTorrents failed: %v", err)
+	}
+
+	if ep != "/v1/api/torrents/mylist" {
+		t.Errorf("endpoint = %q, want /v1/api/torrents/mylist", ep)
+	}
+	if st != http.StatusOK || !ok {
+		t.Errorf("success outcome = status %d ok=%v, want 200 true", st, ok)
+	}
+}
+
+func TestOnOutcome_callsOnNon200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "test-key")
+	var ep string
+	var st int
+	var ok bool
+	client.OnOutcome = func(endpoint string, status int, okflag bool) {
+		ep, st, ok = endpoint, status, okflag
+	}
+
+	if _, err := client.ListTorrents(context.Background(), ListFilesParams{}); err == nil {
+		t.Fatal("expected error on 500")
+	}
+
+	if st != http.StatusInternalServerError || ok {
+		t.Errorf("failure outcome = status %d ok=%v, want 500 false", st, ok)
+	}
+	if ep != "/v1/api/torrents/mylist" {
+		t.Errorf("endpoint = %q, want /v1/api/torrents/mylist", ep)
+	}
+}
+
+func TestOnOutcome_callsOnTransportError(t *testing.T) {
+	// Point the client at a server that has already been closed so the request
+	// fails at the transport layer (status 0, ok=false).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := server.URL
+	server.Close()
+
+	client := newTestClient(url, "test-key")
+	var st int
+	var ok bool
+	client.OnOutcome = func(_ string, status int, okflag bool) {
+		st, ok = status, okflag
+	}
+
+	if _, err := client.ListTorrents(context.Background(), ListFilesParams{}); err == nil {
+		t.Fatal("expected error against closed server")
+	}
+
+	if st != 0 || ok {
+		t.Errorf("transport outcome = status %d ok=%v, want 0 false", st, ok)
+	}
+}
