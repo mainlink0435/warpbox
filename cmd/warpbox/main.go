@@ -204,6 +204,10 @@ func main() {
 		torBoxClient,
 		throttleQueue,
 	)
+	// Feed every TorBox HTTP outcome (sync mylist, requestdl, user/me, and CDN)
+	// into the server's global API-health tracker at the raw-response level, so
+	// retried-and-recovered failures still register instead of reading as 0.
+	torBoxClient.OnOutcome = srv.RecordTorBoxOutcome
 	srv.SetSyncStatus(syncWorker.Status)
 
 	// After each successful sync, prune circuit-breaker/negative-cache entries

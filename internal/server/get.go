@@ -177,6 +177,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		proxyResp, err := client.Do(proxyReq)
 		if err != nil {
 			s.ReleaseCDNConn()
+			s.recordOutcome(false)
 			slog.Error("GET: CDN proxy request failed", "error", err)
 			// Network error — do not retry.
 			http.Error(w, "CDN proxy error", http.StatusBadGateway)
@@ -234,6 +235,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			proxyResp.StatusCode >= 500 {
 			s.ReleaseCDNConn()
 			proxyResp.Body.Close()
+			s.recordOutcome(false)
 			slog.Warn("GET: CDN transient error, entering hang/poll mode",
 				"path", file.Path,
 				"status", proxyResp.StatusCode,
@@ -262,6 +264,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			s.ReleaseCDNConn()
 			cr := proxyResp.Header.Get("Content-Range")
 			proxyResp.Body.Close()
+			s.recordOutcome(false)
 			if n, ok := parseCDNTrueSize(cr); ok && n != file.Size {
 				slog.Warn("CDN size mismatch, correcting file size",
 					"path", file.Path,
@@ -290,6 +293,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			s.ReleaseCDNConn()
 			proxyResp.Body.Close()
+			s.recordOutcome(false)
 
 			// If the CDN returned 403/404 even after refreshing the URL, the
 			// file is not available. Cache this failure so subsequent requests
@@ -336,6 +340,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			ct := proxyResp.Header.Get("Content-Type")
 			s.ReleaseCDNConn()
 			proxyResp.Body.Close()
+			s.recordOutcome(false)
 			slog.Warn("GET: CDN returned a text/error body on a 2xx data response (disguised rate-limit/error) — not streaming, entering hang/poll",
 				"path", file.Path, "content_type", ct, "status", proxyResp.StatusCode,
 				"source", file.Source, "item_id", file.ItemID, "file_id", file.FileID,
@@ -364,6 +369,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		} else {
 			w.WriteHeader(http.StatusOK)
 		}
+		s.recordOutcome(true)
 
 		defer s.ReleaseCDNConn()
 		defer proxyResp.Body.Close()
@@ -597,7 +603,7 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 
 		// Record the outcome for the global requestdl health tracker so a
 		// transient TorBox-wide flap is distinguishable from item-scoped failure.
-		s.recordRequestdlOutcome(res.err == nil)
+		s.recordOutcome(res.err == nil)
 
 		if res.err == nil {
 			return res.url, nil
@@ -866,6 +872,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 		proxyResp, err := proxyClient.Do(proxyReq)
 		if err != nil {
 			s.ReleaseCDNConn()
+			s.recordOutcome(false)
 			slog.Warn("GET (hang): CDN proxy request failed, will retry",
 				"path", file.Path, "error", err, "next_poll", pollInterval,
 			)
@@ -885,6 +892,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			ct := proxyResp.Header.Get("Content-Type")
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
+			s.recordOutcome(false)
 
 			// Invalidate the cached URL so the next loop iteration fetches fresh.
 			if s.cfg.CDNTtlMinutes > 0 {
@@ -924,6 +932,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			cr := proxyResp.Header.Get("Content-Range")
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
+			s.recordOutcome(false)
 			if n, ok := parseCDNTrueSize(cr); ok && n != file.Size {
 				slog.Warn("GET (hang): CDN size mismatch, correcting file size",
 					"path", file.Path,
@@ -954,6 +963,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
+			s.recordOutcome(false)
 			slog.Error("GET (hang): CDN returned non-success after recovery",
 				"path", file.Path, "status", proxyResp.StatusCode,
 			)
@@ -961,6 +971,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 		}
 
 		// 4. Success — stream data to client and exit.
+		s.recordOutcome(true)
 		defer s.ReleaseCDNConn()
 		defer proxyResp.Body.Close()
 		written, copyErr := io.Copy(w, proxyResp.Body)

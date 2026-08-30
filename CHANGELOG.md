@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-200 TorBox API responses now surface the error code (e.g. `DATABASE_ERROR`, `BAD_TOKEN`) in logs
 
 ### Fixed
+- API health now counts **every** TorBox call (metadata sync, download-link requests, and CDN data-plane attempts) at the raw HTTP level — including retried-and-recovered failures that previously counted as a single success — so a multi-day provider outage shows up in the "API Health" section (failures, degraded badge) instead of reading "Healthy / Failures: 0"
 - `circuit_breaker_window_seconds` default raised 60 → 600 so persistent low-rate failures (throttled by the negative cache) trip the breaker, not just burst storms
 - A transient TorBox-wide outage no longer falsely labels healthy items as dead — the "remove and re-add" guidance only appears when the API is otherwise healthy
 - Items removed or re-added at TorBox clear quarantine automatically on the next metadata sync (breaker entries pruned for item ids no longer in the library)

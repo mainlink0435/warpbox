@@ -574,9 +574,11 @@ func (s *Server) sweepCircuitBreaker() {
 	}
 }
 
-// recordRequestdlOutcome records a requestdl success/failure for the global
-// health tracker, pruning outcomes older than the window.
-func (s *Server) recordRequestdlOutcome(ok bool) {
+// recordOutcome records a single TorBox API/CDN outcome for the global health
+// tracker, pruning outcomes older than the window. Fed by every HTTP attempt
+// (sync mylist, requestdl, user/me, and CDN data-plane calls) so retried-and-
+// recovered failures still count, rather than being invisible.
+func (s *Server) recordOutcome(ok bool) {
 	s.requestdlHealthMu.Lock()
 	defer s.requestdlHealthMu.Unlock()
 
@@ -591,6 +593,15 @@ func (s *Server) recordRequestdlOutcome(ok bool) {
 		}
 	}
 	s.requestdlOutcomes = keep
+}
+
+// RecordTorBoxOutcome feeds any TorBox HTTP outcome into the global health
+// tracker. It is wired to torbox.Client.OnOutcome so every API attempt is
+// counted at the raw HTTP level, including attempts that later recover on a
+// retry. endpoint and status are accepted for forward compatibility (only the
+// success/failure bit is tracked today).
+func (s *Server) RecordTorBoxOutcome(endpoint string, status int, ok bool) {
+	s.recordOutcome(ok)
 }
 
 // globalDegraded reports whether the requestdl API as a whole looks degraded
