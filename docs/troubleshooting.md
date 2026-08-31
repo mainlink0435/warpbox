@@ -35,7 +35,7 @@ This page covers common problems, what they mean, and how to fix them.
 | Cause | Fix |
 |-------|-----|
 | API key is wrong or expired | Verify in TorBox dashboard. Regenerate if needed. |
-| `throttle.requests_per_minute` too high | Default is 250 (below TorBox's 300 limit). If you raised it, lower it back. |
+| `throttle.requests_per_minute` too high | Default is 250 (below TorBox's 300 limit). If you raised it, lower it back. This caps the combined metadata-sync + playback rate. |
 | Multiple warpbox instances sharing one API key | Each instance has its own throttle. One key, one instance. |
 | A single torrent causing repeated failures | Check the landing page for circuit breaker status — a stuck torrent can burn rate budget on retries. |
 

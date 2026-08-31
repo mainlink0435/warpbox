@@ -134,8 +134,8 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		itemCount = -1
 	}
 
-	// Throttle stats.
-	throttleStats := s.queue.Stats()
+	// Throttle stats (aggregated across playback + sync queues).
+	throttleStats := s.throttleStats()
 
 	// Sync status (API health).
 	lastSyncTime := ""

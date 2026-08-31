@@ -67,7 +67,7 @@ All `/actions/*` POST endpoints require an `X-CSRF-Token` header (generated per-
 
 ## Network & Rate Limiting
 
-- Blocking queues and internal throttling manage massive concurrent read requests. The proxy absorbs burst traffic from Plex and drip-feeds it to the TorBox API strictly below the 300 requests/minute limit.
+- Blocking queues and internal throttling manage massive concurrent read requests. Two queues — one for metadata sync, one for playback (`requestdl`) — share a single rate limiter, so the proxy absorbs burst traffic from Plex and drip-feeds the API to TorBox collectively at a safe rate strictly below the 300 requests/minute limit.
 
 ## Documentation Structure
 

@@ -470,3 +470,48 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/torbox/client.go` (`UserInfo`),
   `internal/server/landing.go` (`planName`, `formatTBDate`, `LandingData`),
   `internal/server/landing.html`, plus tests and docs.
+
+## D-030: Split the throttle queue so metadata sync can't starve playback requestdl
+
+- **Date:** 2026-08-31
+- **Context:** All TorBox API calls went through one serialized throttle queue
+  (`internal/throttle/queue.go`). The metadata sync worker and the playback
+  path (`requestdl` for CDN URLs) shared that single queue. The sync's usenet
+  `mylist` pagination is slow (~60s/page against TorBox's degraded endpoint,
+  ~150s per full cycle) and occupies the single `processLoop` goroutine while
+  it runs. Any cold play of an uncached file therefore waited 40-120s behind
+  the sync's pagination before its `requestdl` ran, causing rclone/Plex to time
+  out ("can't play"). Warm plays (CDN URL cached, TTL 120 min) skipped the
+  queue and worked instantly. The queue is a pacing queue (min spacing between
+  sequential calls), not a concurrency-aware limiter, so a slow call blocks
+  everything behind it — a day-one design flaw.
+- **Decision:** Split the single queue into two independent queues, one for
+  metadata sync (`syncQueue`) and one for playback (`requestQueue`), both
+  paced by a single shared `throttle.Limiter` so the configured
+  `throttle.requests_per_minute` remains a true *collective* cap across sync +
+  requestdl rather than a per-queue limit:
+  - `internal/throttle`: extract the start-spacing logic into a shareable
+    `Limiter` (`NewLimiter`, `Wait(ctx)`); `Queue` gains an optional shared
+    limiter (`NewQueueWithLimiter`), with `NewQueue` still self-paced for
+    backward compatibility. Each queue keeps its own `processLoop` goroutine,
+    so a long-running sync `Execute` no longer blocks a requestdl `Execute`.
+  - `cmd/warpbox/main.go`: create one `limiter` + two queues sharing it; wire
+    `syncQueue` into `metadata.NewSyncWorker` and `requestQueue` into
+    `server.New`; `HTTP429Callback` records on both queues; call
+    `srv.SetSyncQueue(syncQueue)`.
+  - `internal/server`: `SetSyncQueue` + `throttleStats()` aggregate both
+    queues' counters for the landing page and stats recorder.
+- **Rationale:** The starvation was caused purely by queue-sharing wiring, so
+  the fix is localized. Splitting consumers means the sync's slow calls can no
+  longer hold the playback path hostage. Sharing one `Limiter` preserves the
+  operator's configured rate as a hard cap across all TorBox calls — with two
+  independent self-paced queues the worst-case aggregate would have been 2×
+  the configured rate. Each queue still serializes its own requests, so
+  requestdl bursts are not introduced.
+- **Alternatives considered:** A true concurrency-aware token bucket (bounded
+  in-flight calls) — deferred; higher risk of TorBox 429s and not required once
+  queues are split. Priority queue — more invasive. Per-page sync enqueue
+  (interleaving + observability) — optional follow-on.
+- **Implementation:** `internal/throttle/queue.go`,
+  `cmd/warpbox/main.go`, `internal/server/server.go`,
+  `internal/server/landing.go`, plus tests and docs.

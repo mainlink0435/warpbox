@@ -19,12 +19,55 @@ type Request struct {
 	Execute  func(ctx context.Context) error
 }
 
+// Limiter paces the *start* of API calls. Multiple queues can share a single
+// Limiter so the aggregate call start rate across all of them never exceeds
+// requestsPerMinute, while each queue still runs its own processLoop. This is
+// what keeps the configured rate a true collective cap across the metadata
+// sync and playback (requestdl) queues, instead of a per-queue limit.
+type Limiter struct {
+	mu       sync.Mutex
+	rate     time.Duration
+	lastCall time.Time
+}
+
+// NewLimiter creates a shared rate limiter that paces call starts.
+// requestsPerMinute sets the maximum collective start rate.
+func NewLimiter(requestsPerMinute int) *Limiter {
+	return &Limiter{
+		rate: time.Minute / time.Duration(requestsPerMinute),
+	}
+}
+
+// Wait blocks until a start slot is available, then reserves it. The pacing is
+// start-to-start: consecutive starts (across all queues sharing this limiter)
+// are spaced at least rate apart. Returns promptly on context cancellation.
+func (l *Limiter) Wait(ctx context.Context) {
+	for {
+		l.mu.Lock()
+		now := time.Now()
+		elapsed := now.Sub(l.lastCall)
+		if elapsed >= l.rate {
+			l.lastCall = now
+			l.mu.Unlock()
+			return
+		}
+		wait := l.rate - elapsed
+		l.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
 // Queue is a rate-limited, blocking queue for TorBox API requests.
 type Queue struct {
-	mu         sync.Mutex
-	items      chan Request
-	rate       time.Duration
-	lastCall   time.Time
+	mu      sync.Mutex
+	items   chan Request
+	limiter *Limiter
+	rate    time.Duration
+	// Stats counters (per-queue; the server aggregates across queues).
 	totalCalls int64
 	callWindow []time.Time
 
@@ -43,12 +86,23 @@ type Stats struct {
 	RequestsPerMinute int
 }
 
-// NewQueue creates a new throttle queue.
+// NewQueue creates a new self-paced throttle queue.
 // requestsPerMinute sets the maximum sustained call rate.
 func NewQueue(requestsPerMinute int) *Queue {
+	return NewQueueWithLimiter(requestsPerMinute, nil)
+}
+
+// NewQueueWithLimiter creates a throttle queue paced by the given limiter.
+// If limiter is nil, the queue gets its own private limiter. Sharing a limiter
+// between queues enforces the collective requestsPerMinute across all of them.
+func NewQueueWithLimiter(requestsPerMinute int, shared *Limiter) *Queue {
+	if shared == nil {
+		shared = NewLimiter(requestsPerMinute)
+	}
 	return &Queue{
-		rate:  time.Minute / time.Duration(requestsPerMinute),
-		items: make(chan Request, queueBufferSize),
+		items:   make(chan Request, queueBufferSize),
+		limiter: shared,
+		rate:    time.Minute / time.Duration(requestsPerMinute),
 	}
 }
 
@@ -92,20 +146,20 @@ func (q *Queue) processLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case r := <-q.items:
-			// Enforce minimum spacing between calls.
-			elapsed := time.Since(q.lastCall)
-			if elapsed < q.rate {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(q.rate - elapsed):
-				}
+			// Pace the start through the (possibly shared) limiter. This blocks
+			// only while acquiring a start slot; a long-running Execute in one
+			// queue never delays another queue sharing the same limiter.
+			q.limiter.Wait(ctx)
+			// If the context was cancelled while waiting for a start slot, exit
+			// the loop without running the request (matches pre-split behaviour
+			// of dropping pending work on shutdown).
+			if ctx.Err() != nil {
+				return
 			}
 
 			err := r.Execute(ctx)
 
 			q.mu.Lock()
-			q.lastCall = time.Now()
 			q.totalCalls++
 			if err != nil {
 				q.failedCalls++
@@ -115,9 +169,9 @@ func (q *Queue) processLoop(ctx context.Context) {
 			} else {
 				q.successfulCalls++
 			}
-			q.callWindow = append(q.callWindow, q.lastCall)
+			q.callWindow = append(q.callWindow, time.Now())
 			// Keep the window trimmed to roughly the last 60 seconds.
-			cutoff := q.lastCall.Add(-60 * time.Second)
+			cutoff := time.Now().Add(-60 * time.Second)
 			for len(q.callWindow) > 0 && q.callWindow[0].Before(cutoff) {
 				q.callWindow = q.callWindow[1:]
 			}

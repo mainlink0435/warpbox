@@ -214,7 +214,7 @@ Every CDN download link from TorBox expires. Warpbox caches these URLs in SQLite
 
 ### 3. Blocking throttle
 
-If rclone fires off 200 concurrent API requests (common during a library import), warpbox doesn't fail. It places all 200 in a blocking queue and trickles them to TorBox at a safe, configured rate (250 requests per minute or whatever you set). Rclone sees a slow disk. Plex doesn't crash. The API stays within its limit.
+If rclone fires off 200 concurrent API requests (common during a library import), warpbox doesn't fail. It places all 200 in a blocking queue and trickles them to TorBox at a safe, configured rate (250 requests per minute or whatever you set). Metadata sync runs on a separate queue that shares the same rate budget, so a slow sync can never hold up playback. Rclone sees a slow disk. Plex doesn't crash. The API stays within its limit.
 
 ### 4. Hang/poll mode
 
@@ -238,7 +238,7 @@ A full explanation of every rclone flag, why each matters, and how to tune them 
 
 Warpbox is designed to operate within TorBox's Terms of Service, available at [github.com/TorBox-App/hosted-terms_of_service](https://github.com/TorBox-App/hosted-terms_of_service).
 
-- **Rate limiting:** Warpbox's throttle queue enforces a configurable rate limit (default 250 requests/minute) to stay below TorBox's 300 RPM limit. It never bypasses or circumvents API rate limits.
+- **Rate limiting:** Warpbox's throttle queues (metadata sync + playback) share a single rate budget that enforces a configurable limit (default 250 requests/minute) to stay below TorBox's 300 RPM limit. It never bypasses or circumvents API rate limits.
 - **Private access:** All CDN URLs and content access tokens stay on your local machine. Warpbox does not share, cache publicly, or distribute any private access links.
 - **No account sharing:** Warpbox uses your own TorBox API key, configured locally. It does not bundle, resell, or distribute API keys.
 - **Fair usage:** Warpbox's architecture (SQLite metadata cache, CDN URL caching) minimises API calls rather than generating unnecessary requests.

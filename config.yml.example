@@ -100,7 +100,10 @@ cache:
 
 throttle:
   # Maximum sustained TorBox API requests per minute.
-  # The free TorBox plan allows 300 RPM. Setting this higher will result
+  # This is a COLLECTIVE cap across metadata sync and playback (CDN-URL
+  # requestdl) calls — both run on separate queues that share one rate budget,
+  # so a slow sync can't starve playback while still respecting the overall
+  # limit. The free TorBox plan allows 300 RPM. Setting this higher will result
   # in 429 errors. Must be 10–1000.
   # Default: 250
   requests_per_minute: 250
@@ -116,6 +119,11 @@ logging:
 
 sync:
   # How often to sync metadata from TorBox (in minutes).
+  # A sync cycle paginates your whole library and can take ~2-3 minutes on
+  # large libraries (especially when TorBox's usenet mylist endpoint is slow).
+  # If the interval is shorter than the cycle duration, the sync restarts
+  # before finishing and never idles, hammering the API. For large libraries,
+  # consider 15+ so the sync finishes and then idles between runs.
   # Must be 1–1440. Default: 5
   # interval_minutes: 5
 

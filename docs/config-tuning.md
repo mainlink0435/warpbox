@@ -11,7 +11,7 @@ simultaneous streams. The suggestions below are starting points, not rules.
 
 | Key | Default | Range | Consider changing when... |
 |-----|---------|-------|--------------------------|
-| `throttle.requests_per_minute` | 250 | 10–1000 | You want more headroom below TorBox's 300 RPM limit, or you need faster sync throughput |
+| `throttle.requests_per_minute` | 250 | 10–1000 | You want more headroom below TorBox's 300 RPM limit, or you need faster sync throughput. This caps the **combined** metadata-sync + playback rate (shared limiter), not a per-consumer limit. |
 | `cache.max_cdn_connections` | 4 | 1–64 | Multiple simultaneous streams compete for CDN slots |
 | `cache.cdn_url_ttl_minutes` | 120 | 1–1440 | You see `stale CDN URL detected` warnings — the URL is expiring before the TTL |
 | `cache.cdn_url_auto_repair` | true | true/false | You'd rather serve errors than wait for repair (not recommended) |
@@ -178,7 +178,7 @@ credentials.
 
 | Key | Suggested | Why |
 |-----|-----------|-----|
-| `throttle.requests_per_minute` | 150 | 50% headroom below TorBox's 300 RPM limit |
+| `throttle.requests_per_minute` | 150 | 50% headroom below TorBox's 300 RPM limit (covers metadata sync + playback collectively) |
 | `circuit_breaker_failures` | 3 | Trip faster on problematic torrents |
 
 ## Virtual Path Tuning

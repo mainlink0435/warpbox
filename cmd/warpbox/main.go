@@ -109,21 +109,30 @@ func main() {
 	}
 	defer metadataStore.Close()
 
-	throttleQueue := throttle.NewQueue(cfg.Throttle.RequestsPerMinute)
+	// One shared rate limiter paces the start of every TorBox API call across
+	// both queues, so the configured requests_per_minute is a true collective
+	// cap (metadata sync + playback requestdl), not a per-queue limit.
+	limiter := throttle.NewLimiter(cfg.Throttle.RequestsPerMinute)
+	requestQueue := throttle.NewQueueWithLimiter(cfg.Throttle.RequestsPerMinute, limiter)
+	syncQueue := throttle.NewQueueWithLimiter(cfg.Throttle.RequestsPerMinute, limiter)
 
 	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
 	torBoxClient.SetTimeout(time.Duration(cfg.TorBox.RequestTimeoutSeconds) * time.Second)
-	torBoxClient.HTTP429Callback = func() { throttleQueue.Record429() }
+	torBoxClient.HTTP429Callback = func() {
+		requestQueue.Record429()
+		syncQueue.Record429()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	throttleQueue.Start(ctx)
+	requestQueue.Start(ctx)
+	syncQueue.Start(ctx)
 
 	syncWorker := metadata.NewSyncWorker(
 		metadataStore,
 		torBoxClient,
-		throttleQueue,
+		syncQueue,
 		time.Duration(cfg.Sync.IntervalMinutes)*time.Minute,
 		cfg.Sync.ListPageSize,
 		cfg.Sync.BypassCache,
@@ -202,8 +211,9 @@ func main() {
 		serverCfg,
 		metadataStore,
 		torBoxClient,
-		throttleQueue,
+		requestQueue,
 	)
+	srv.SetSyncQueue(syncQueue)
 	// Feed every TorBox HTTP outcome (sync mylist, requestdl, user/me, and CDN)
 	// into the server's global API-health tracker at the raw-response level, so
 	// retried-and-recovered failures still register instead of reading as 0.

@@ -2,6 +2,8 @@ package throttle
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -186,6 +188,117 @@ func TestErrorDoesNotDeadlock(t *testing.T) {
 type mockError struct{ msg string }
 
 func (e *mockError) Error() string { return e.msg }
+
+// TestSharedLimiterCollectiveCap proves that when two queues share a single
+// Limiter, the configured requests_per_minute is enforced as a collective cap
+// across BOTH queues combined — not per-queue. With 120 RPM (500ms spacing),
+// every pair of consecutive global starts must be ~500ms apart.
+func TestSharedLimiterCollectiveCap(t *testing.T) {
+	limiter := NewLimiter(120) // 120 RPM = 500ms spacing
+	q1 := NewQueueWithLimiter(120, limiter)
+	q2 := NewQueueWithLimiter(120, limiter)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	q1.Start(ctx)
+	q2.Start(ctx)
+
+	var mu sync.Mutex
+	var starts []time.Time
+	record := func() {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		mu.Unlock()
+	}
+
+	// 3 requests on each queue, all enqueued immediately.
+	for i := 0; i < 3; i++ {
+		q1.Enqueue(Request{Label: "q1", Execute: func(context.Context) error { record(); return nil }})
+		q2.Enqueue(Request{Label: "q2", Execute: func(context.Context) error { record(); return nil }})
+	}
+
+	// Wait for all 6 to complete.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(starts)
+		mu.Unlock()
+		if n >= 6 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(starts) != 6 {
+		t.Fatalf("expected 6 starts, got %d", len(starts))
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+
+	// Consecutive global starts must be spaced ~500ms apart (collective cap).
+	const minGap = 400 * time.Millisecond
+	for i := 1; i < len(starts); i++ {
+		gap := starts[i].Sub(starts[i-1])
+		if gap < minGap {
+			t.Errorf("gap between global starts %d-%d = %v, want >= %v (collective cap violated)", i-1, i, gap, minGap)
+		}
+	}
+}
+
+// TestSharedLimiterNoStarvation proves that a long-running request on one
+// queue (a slow metadata-sync call) does not block a request on another queue
+// (playback requestdl) that shares the same limiter.
+func TestSharedLimiterNoStarvation(t *testing.T) {
+	limiter := NewLimiter(600) // 100ms spacing
+	qSlow := NewQueueWithLimiter(600, limiter)
+	qFast := NewQueueWithLimiter(600, limiter)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qSlow.Start(ctx)
+	qFast.Start(ctx)
+
+	syncStarted := make(chan struct{})
+	release := make(chan struct{})
+	fastDone := make(chan struct{})
+
+	qSlow.Enqueue(Request{
+		Label: "slow-sync",
+		Execute: func(context.Context) error {
+			close(syncStarted)
+			<-release // hold the slow queue open
+			return nil
+		},
+	})
+
+	select {
+	case <-syncStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow request never started")
+	}
+
+	qFast.Enqueue(Request{
+		Label: "fast-requestdl",
+		Execute: func(context.Context) error {
+			close(fastDone)
+			return nil
+		},
+	})
+
+	// The fast request must complete while the slow sync request is still held
+	// open — proving a long-running sync call cannot starve playback.
+	select {
+	case <-fastDone:
+		// success
+	case <-time.After(1 * time.Second):
+		t.Fatal("fast request starved behind slow sync request")
+	}
+
+	close(release)
+	select {
+	case <-time.After(500 * time.Millisecond):
+	case <-ctx.Done():
+	}
+}
 
 func TestRateLimiting(t *testing.T) {
 	// 1200 req/min should process quickly (50ms spacing).

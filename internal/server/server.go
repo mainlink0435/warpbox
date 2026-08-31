@@ -118,6 +118,10 @@ type Server struct {
 	store      *metadata.Store
 	torBox     *torbox.Client
 	queue      *throttle.Queue
+	// syncQueue is the metadata sync worker's throttle queue. It shares a
+	// single rate Limiter with s.queue (see SetSyncQueue). Stats are aggregated
+	// across both for the landing page and stats recorder.
+	syncQueue  *throttle.Queue
 	root       string
 	mux        *chi.Mux
 	httpServer *http.Server
@@ -407,7 +411,7 @@ func (s *Server) startCleanupLoop() {
 // Gauge metrics (sys_mb, alloc_mb, heap_objects, cache sizes) show
 // point-in-time snapshots.
 func (s *Server) recordStats() {
-	throttleStats := s.queue.Stats()
+	throttleStats := s.throttleStats()
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
@@ -1052,6 +1056,36 @@ func (s *Server) registerRoutes() {
 // SetSyncStatus configures the callback for reading sync worker status.
 func (s *Server) SetSyncStatus(fn SyncStatusFunc) {
 	s.syncStatus = fn
+}
+
+// SetSyncQueue wires the metadata sync worker's throttle queue so the landing
+// page and stats recorder aggregate API-call counters across both the playback
+// (requestdl) queue and the sync queue. It shares a rate limiter with the
+// playback queue, so the configured requests_per_minute stays a collective cap.
+func (s *Server) SetSyncQueue(q *throttle.Queue) {
+	s.syncQueue = q
+}
+
+// throttleStats aggregates API-call counters across the playback queue and
+// (if wired) the metadata sync queue for the landing page and stats recorder.
+//
+// HTTP429Calls is deliberately NOT summed: the HTTP429Callback in main.go
+// records a 429 on BOTH queues (it can't know which queue's call was limited),
+// so both counters are always identical and summing would double-count every
+// 429. Taking the max yields the single true global 429 count.
+func (s *Server) throttleStats() throttle.Stats {
+	total := s.queue.Stats()
+	if s.syncQueue != nil {
+		sync := s.syncQueue.Stats()
+		total.TotalCalls += sync.TotalCalls
+		total.SuccessfulCalls += sync.SuccessfulCalls
+		total.FailedCalls += sync.FailedCalls
+		if sync.HTTP429Calls > total.HTTP429Calls {
+			total.HTTP429Calls = sync.HTTP429Calls
+		}
+		total.CallsLastMinute += sync.CallsLastMinute
+	}
+	return total
 }
 
 // handleOptions responds with WebDAV capabilities.
