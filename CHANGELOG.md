@@ -5,6 +5,11 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.8.2] - 2026-08-31
+
+### Fixed
+- Metadata sync no longer blocks playback: CDN download-link (`requestdl`) calls now run on their own throttle queue, so a slow usenet-pagination sync cycle can no longer delay first-play start by 40–120s (which caused rclone/Plex to time out with "can't play"). The sync and playback queues share a single rate limiter, so `throttle.requests_per_minute` remains one collective cap across both, and the landing-page API-call counters aggregate the two queues
+
 ## [v0.8.1] - 2026-08-30
 
 ### Fixed
@@ -175,7 +180,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.8.0...HEAD
+[Unreleased]: /compare/v0.8.2...HEAD
+[v0.8.2]: /compare/v0.8.1...v0.8.2
+[v0.8.1]: /compare/v0.8.0...v0.8.1
 [v0.8.0]: /compare/v0.7.6...v0.8.0
 [v0.7.6]: /compare/v0.7.5...v0.7.6
 [v0.7.5]: /compare/v0.7.4...v0.7.5
